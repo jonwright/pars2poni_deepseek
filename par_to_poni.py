@@ -2,7 +2,8 @@
 par_to_poni.py — Convert between ImageD11 .par and pyFAI .poni geometry parameters.
 
 Based on the 4x4 affine matrix analysis of the two geometry frameworks.
-All 16 flip→orientation pairs have exact closed-form solutions.
+All 4 non-transpose flip→orientation pairs have exact closed-form solutions
+via rotation compensation. Transpose flips (o12,o21≠0) are not supported.
 
 No dependencies beyond Python stdlib. All internal units are meters for lengths
 and meters for wavelength.
@@ -224,18 +225,19 @@ def _compute_compensated_rotation(o11, o22, orient, r1_std, r2_std, r3_std):
 
 
 def _compute_id11_from_pyfai(rot1, rot2, rot3, orient):
-    """Reverse: from pyFAI rotation params → ID11 tilt params.
+    """Recover original ID11 tilt rotation from compensated pyFAI params.
 
-    The pyFAI rotation R_total = R_tilt · Q where R_tilt is the ID11 tilt
-    rotation.  We extract R_tilt = R_total · Q^T.
+    From the forward equation: S(orient) · R_comp = R_tilt · Z(flip),
+    we reverse to get R_tilt[:,0:2] = S · R_comp · Z and build the
+    third column via cross product, ensuring right-handed orientation.
+    Returns (tr1, tr2, tr3) as the tilt rotation angles (R3·R2·R1 convention).
     """
     S_diag = {3: (1, 1, 1), 2: (-1, 1, 1), 4: (1, -1, 1), 1: (-1, -1, 1)}[orient]
     R_total = _pyfai_rotation_matrix(rot1, rot2, rot3)
 
-    # Build R_tilt from R_total.  Since R_comp[:, 0:2] = S · R_tilt · Z,
-    # we have R_tilt[:, 0:2] = S · R_comp · Z (since Z·Z = I and S² = I).
-    # But Z only gives us the first two columns.  For the full R_tilt,
-    # we use: R_tilt[:, 0:2] = S · R_total · Z.
+    # Build R_tilt from R_total.  Since R_comp[:,0:2] = S · R_tilt · Z
+    # and Z^T·Z = I₂ (because o11²=o22²=1), we have
+    # R_tilt[:,0:2] = S · R_comp · Z.  For the full R_tilt,
 
     o11, o12, o21, o22 = orientation_to_flip(orient)
     z_col0 = (o11, 0.0, 0.0)
@@ -276,10 +278,18 @@ def _compute_id11_from_pyfai(rot1, rot2, rot3, orient):
 def par_to_poni(par):
     """Convert ImageD11 .par parameters -> pyFAI .poni parameters.
 
-    Parameters (all lengths in meters internally, wavelength in meters):
+    Parameters
+    ----------
+    par : dict
+        Keys: distance, y_center, z_center, y_size, z_size,
+        tilt_x, tilt_y, tilt_z, o11, o12, o21, o22, wavelength.
+        All lengths in meters internally, wavelength in meters.
 
-    Returns a dict with keys: dist, poni1, poni2, rot1, rot2, rot3,
-    pixel1, pixel2, wavelength, orientation.
+    Returns
+    -------
+    dict
+        Keys: dist, poni1, poni2, rot1, rot2, rot3,
+        pixel1, pixel2, wavelength, orientation.
     """
     tx = float(par.get("tilt_x", 0.0))
     ty = float(par.get("tilt_y", 0.0))
@@ -331,9 +341,19 @@ def par_to_poni(par):
 def poni_to_par(poni):
     """Convert pyFAI .poni parameters -> ImageD11 .par parameters.
 
-    Returns a dict with keys: distance, y_center, z_center, y_size,
-    z_size, tilt_x, tilt_y, tilt_z, o11, o12, o21, o22, wavelength,
-    wedge, chi, omegasign, fit_tolerance.
+    Parameters
+    ----------
+    poni : dict
+        Keys: dist, poni1, poni2, rot1, rot2, rot3,
+        pixel1, pixel2, wavelength, orientation.
+        All lengths and wavelength in meters.
+
+    Returns
+    -------
+    dict
+        Keys: distance, y_center, z_center, y_size,
+        z_size, tilt_x, tilt_y, tilt_z, o11, o12, o21, o22,
+        wavelength, wedge, chi, omegasign, fit_tolerance.
     """
     L = float(poni["dist"])
     rot1 = float(poni.get("rot1", 0.0))

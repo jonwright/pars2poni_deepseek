@@ -14,7 +14,7 @@
 - **Account for the 0.5 pixel offset** in conversion formulas.
 - **Direct algebra** (geometry_conversion.rst derivations), not via Fit2D intermediate.
 - **No spatial distortion** — splines/dx/dy files ignored for now.
-- **wedge, chi, omegasign, fit_tolerance** set to zero in par file output.
+- **wedge, chi** set to zero in par file output; **omegasign** to 1.0, **fit_tolerance** to 0.05.
 - **Unit handling**: ImageD11 par files are unit-agnostic ("inches are OK"). Provide an
   option (`par_length_unit`) for micron (µm), mm, or meters when reading/writing par files.
   Internally all lengths are in meters, matching pyFAI's convention.
@@ -98,9 +98,9 @@ From `imaged11.py:168-183`:
 | o11 | o12 | o21 | o22 | Orientation | Effect on lab coords |
 |---|---|---|---|---|---|
 | 1 | 0 | 0 | -1 | **3** (pyFAI native) | No sign flip |
-| -1 | 0 | 0 | 1 | **2** | t1 = -t1 (flip slow/y axis) |
+| -1 | 0 | 0 | 1 | **1** | t1 = -t1, t2 = -t2 (flip both) |
 | -1 | 0 | 0 | -1 | **4** | t2 = -t2 (flip fast/x axis) |
-| 1 | 0 | 0 | 1 | **1** | t1 = -t1, t2 = -t2 (flip both) |
+| 1 | 0 | 0 | 1 | **2** | t1 = -t1 (flip slow/y axis) |
 
 ImageD11 flip matrix (`transform.py:689-691`):
 ```
@@ -216,6 +216,11 @@ To avoid wrap-around issues: compare `sin(chi)` vs `sin(90°-eta)` and `cos(chi)
 
 ## 2. MATHEMATICAL MAPPINGS (with 0.5 correction)
 
+> **Note**: §§2.1–2.2 below show the **standard** (uncompensated) formulas valid for
+> orientation 3 only. The actual code applies rotation compensation (see §5) to
+> achieve exact matching for all 4 orientations. The PONI formulas in §2.2 use
+> compensated rotation parameters in the implementation.
+
 ### 2.1 pyFAI → ImageD11
 
 Given: `L, poni1, poni2, rot1, rot2, rot3, pixel_v, pixel_h, orientation, wavelength`
@@ -239,9 +244,9 @@ y_size = pixel_h
 
 # Flip matrix from orientation:
 #   orientation 3 → o11=1, o12=0, o21=0, o22=-1  (native)
-#   orientation 2 → o11=-1, o12=0, o21=0, o22=1
-#   orientation 4 → o11=-1, o12=0, o21=0, o22=-1
-#   orientation 1 → o11=1, o12=0, o21=0, o22=1
+#   orientation 1 → o11=-1, o12=0, o21=0, o22=1  (flip both)
+#   orientation 4 → o11=-1, o12=0, o21=0, o22=-1 (flip fast)
+#   orientation 2 → o11=1, o12=0, o21=0, o22=1   (flip slow)
 
 # Wavelength: pyFAI (m) → ImageD11 (Å)
 wavelength_Å = wavelength_m * 1e10
@@ -270,9 +275,9 @@ pixel_h = y_size
 
 # Orientation from flip matrix:
 #   (1,0,0,-1) → orientation 3
-#   (-1,0,0,1) → orientation 2
+#   (-1,0,0,1) → orientation 1
 #   (-1,0,0,-1) → orientation 4
-#   (1,0,0,1) → orientation 1
+#   (1,0,0,1) → orientation 2
 
 # Wavelength: ImageD11 (Å) → pyFAI (m)
 wavelength_m = wavelength_Å * 1e-10
@@ -314,8 +319,8 @@ poni_to_par(par_to_poni(par)) ≈ par      (par round-trip)
 ### 3.1 `par_to_poni.py` — Conversion + IO
 
 Functions:
-- `par_to_poni(par, wavelength_m=1e-10, par_length_unit="um")` → poni dict
-- `poni_to_par(poni, par_length_unit="um")` → par dict
+- `par_to_poni(par)` → poni dict
+- `poni_to_par(poni)` → par dict
 - `read_par(filepath, par_length_unit="um")` → dict
 - `write_par(par_dict, filepath, par_length_unit="um")` → None
 - `read_poni(filepath)` → dict
@@ -358,25 +363,6 @@ Test geometry: strongly tilted detector (tilt_x=0.3, tilt_y=0.2, tilt_z=-0.15 ra
 | 4 | `test_conversion.py` | Test suite running against pyFAI + ImageD11 |
 
 ## 5. KNOWN LIMITATIONS
-
-### Non-native Orientations with Tilted Detectors
-
-The conversion is **exact** for orientation 3 (pyFAI native, o11=1,o22=-1) at any tilt.
-For orientations 2, 4, 1 with tilted detectors, the 2θ values have a residual error
-of ~0.05 rad (~3°) for the strongly-tilted test geometry (tilt_x=0.3, tilt_y=0.2,
-tilt_z=-0.15). This is because ImageD11's flip matrix applies BEFORE the rotation
-matrix, while pyFAI's orientation sign flips apply AFTER. These do not commute.
-
-For zero-tilt detectors, all orientations match exactly.
-
-This matches the existing pyFAI→ImageD11 test tolerance in pyFAI's own test suite
-(`test_export.py`, atol=3e-2 deg).
-
-### Azimuth Mapping
-
-Exact for orientation 3 (`chi = 90° - eta`). For non-native orientations, the
-relationship depends on which sign flips are in effect. The test verifies basic
-physical consistency rather than demanding a specific algebraic formula.
 
 ### 4x4 Affine Transformation Analysis (Final Solution)
 

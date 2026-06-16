@@ -124,6 +124,10 @@ def R_ID11(tilt_x, tilt_y, tilt_z):
 
 ### Rotation parameter correspondence
 
+> **Note**: This is the standard (uncompensated) mapping valid for
+> the native orientation 3 case. For non-native orientations, the code
+> applies rotation compensation (see §12).
+
 The coordinate transform between the two lab frames induces:
 
 ```
@@ -200,6 +204,10 @@ For consistent mapping, we require `G · t_pyFAI_beam = t_ID11_beam = [Δ, 0, 0]
 ---
 
 ## 5. Distance Relationship
+
+> **Note**: The formulas below use standard (uncompensated) rotations.
+> The implementation applies rotation compensation (see §12) before
+> these formulas for non-native orientations.
 
 From the pipeline equating at zero tilts:
 
@@ -318,27 +326,27 @@ Orientation determines:
 
 ### Mapping (non-transpose: o12=o21=0)
 
+Derived from equating the 4×4 affine transformations (see Section 12):
+
 | o11 | o22 | Orientation | pyFAI pixel reorder | pyFAI lab sign flips |
 |---|---|---|---|---|
 | 1 | -1 | 3 | None (native) | None |
-| -1 | 1 | 2 | flip d1 (slow/y) | t1 = -t1 |
+| -1 | 1 | 1 | flip both | t1=-t1, t2=-t2 |
 | -1 | -1 | 4 | flip d2 (fast/x) | t2 = -t2 |
-| 1 | 1 | 1 | flip both | t1=-t1, t2=-t2 |
+| 1 | 1 | 2 | flip d1 (slow/y) | t1 = -t1 |
 
-Verification: The sign flip on t1 maps to the o22 flip because:
-- t1_pyFAI corresponds to slow/y axis
-- slow axis in ImageD11 is z (up)
-- `flipped[0] = o11 * (sc - z_c) * s_v + o12 * (fc - y_c) * s_h`
-- For `o11=-1` (non-transpose), the slow axis gets flipped
+Note: The corrected mapping differs from the existing pyFAI PR #2868 which
+incorrectly mapped (-1,1)→2 and (1,1)→1. The affine analysis shows those
+pairings produce residual 2θ errors with tilted detectors.
 
 ```python
 def orientation_to_flip(orientation):
     """pyFAI orientation → ImageD11 flip matrix (o11, o12, o21, o22)"""
     mapping = {
         3: (1, 0, 0, -1),   # native
-        2: (-1, 0, 0, 1),   # flip slow
+        1: (-1, 0, 0, 1),   # flip both
         4: (-1, 0, 0, -1),  # flip fast
-        1: (1, 0, 0, 1),    # flip both
+        2: (1, 0, 0, 1),    # flip slow
     }
     return mapping[orientation]
 
@@ -346,9 +354,9 @@ def flip_to_orientation(o11, o12, o21, o22):
     """ImageD11 flip → pyFAI orientation"""
     mapping = {
         (1, 0, 0, -1): 3,
-        (-1, 0, 0, 1): 2,
+        (-1, 0, 0, 1): 1,
         (-1, 0, 0, -1): 4,
-        (1, 0, 0, 1): 1,
+        (1, 0, 0, 1): 2,
     }
     if (o11, o12, o21, o22) not in mapping:
         raise ValueError(f"Transpose flips not supported: {o11,o12,o21,o22}")
@@ -435,6 +443,11 @@ Equivalently, since `sin(90° - x) = cos(x)` and `cos(90° - x) = sin(x)`:
 ---
 
 ## 11. Complete Conversion Functions (Pseudocode)
+
+> **Note**: The pseudocode below shows the basic (uncompensated) mapping
+> for clarity. The actual implementation (`par_to_poni.py`) applies rotation
+> compensation (see §12) via `_compute_compensated_rotation()` and
+> `_compute_id11_from_pyfai()` for exact matching on all orientations.
 
 ```python
 import math
@@ -573,83 +586,32 @@ Computing `S(orient)·C(orient)` for each orientation shows:
 
 **All orientations produce the same effective linear product (1,1).**
 
-The ImageD11 Z-matrix for different flips yields:
+Since pyFAI's orientation model always yields `C_actual = diag(1, 1)`, the linear
+system for each (flip, orientation) pair is:
 
-| o₁₁ | o₂₂ | Z | Requires S·C = |
-|---|---|---|---|
-| 1 | −1 | (1, 1) | (1, 1) ✓ orient 3 |
-| −1 | 1 | (−1, −1) | (−1, −1) ✗ no match |
-| −1 | −1 | (−1, 1) | (−1, 1) ✗ no match |
-| 1 | 1 | (1, −1) | (1, −1) ✗ no match |
+```
+S(orient) · R_comp · C_actual = R_tilt · Z(flip)
+```
 
-Since pyFAI's orientation model cannot produce S·C products with negative entries,
-**only flip (o₁₁=1, o₂₂=−1) has an exact pyFAI orientation representation**.
+This always has an exact solution where the columns of R_comp are orthonormal.
+The compensation produces rotated parameters that differ from the standard
+mapping by ±π shifts on two angles, giving `cos(r1)·cos(r2) > 0` (positive
+distance).
 
-For other flips, the linear derivative of the mapping differs in sign on one or
-both axes. The non-commutativity of sign flips with rotation means the residual
-error grows with tilt angle. For flat detectors the operations commute and the
-sign mismatch cancels in the tth (which depends only on the norm), giving
-apparent matching despite the underlying sign difference.
-
-### Conclusion
-
-The conversion between par and poni is **exact** for orientation 3 (o₁₁=1, o₂₂=−1)
-at any tilt. For orientations 2, 1, and 4, the mapping is exact for flat detectors
-and approximate for tilted detectors.
-
-The linear system `S·R·C_eff = R_tilt·Z` has exact solutions for all 16
-flip→orientation pairs. For each pair, the solution rotation matrix has columns
-that are orthonormal to machine precision. The compensation patterns are:
+**Compensated rotation parameters** (where `r1=-tz, r2=ty, r3=tx`):
 
 | Flip | Orient | rot1 | rot2 | rot3 |
 |------|--------|------|------|------|
 | (1,−1) | 3 | r₁ | r₂ | r₃ |
-| (−1,1) | 2 | −r₁ | −r₂ | π−r₃ |
-| (−1,−1) | 1 | π−r₁ | −r₂ | −(π−r₃) |
-| (1,1) | 4 | −(π−r₁) | −r₂ | −r₃ |
+| (−1,1) | 1 | −r₁−π | −r₂ | r₃ |
+| (−1,−1) | 4 | r₁−π | −r₂ | r₃−π |
+| (1,1) | 2 | −r₁ | r₂ | r₃+π |
 
-where (r₁,r₂,r₃) = (−tz, ty, tx) from the standard tilt mapping.
+### Conclusion
 
-The constant term produces a physical distance `dist` that is positive for
-orientation 3 and the flat case, but may be negative for some flips with
-non-zero tilts (unphysical). This structural limitation is why the practical
-implementation uses the standard rotation mapping and accepts ~0.05 rad
-2θ tolerance for non-native orientations — matching pyFAI's own test
-tolerance of 3e−2 deg.
-
-## 13. Known Limitations
-
-### Non-native Orientations with Tilted Detectors
-
-The conversion is **exact** for the default orientation (3, native pyFAI) at any tilt.
-
-For non-native orientations (2, 4, 1), the conversion is **algebraically self-consistent**
-(round-trip tests pass) but the 2θ values diverge for tilted detectors.
-This is because ImageD11's flip matrix applies sign flips to detector coordinates
-**before** rotation, while pyFAI's orientation sign flips apply **after** rotation
-— and pyFAI's orientation model cannot reproduce the effective linear product
-of the ImageD11 flip for non-native cases (see Section 12).
-
-For a flat detector (no rotation), the operations do commute, and all orientations
-match exactly. For a tilted detector, the residual 2θ error is ~0.05 rad (~3°) in
-the worst case for the strongly-tilted test geometry.
-
-This limitation matches the existing pyFAI test tolerance
-(`test_export.py:134`: `atol=3e-2 deg` for 2θ matching with ImageD11).
-
-### Azimuth Mapping
-
-The chi ↔ eta azimuth mapping is exact for orientation 3: `chi = 90° − eta`.
-For non-native orientations, the relationship depends on which sign flips are
-active. The sin/cos pairwise comparison method avoids wrap-around issues.
-
-### Transpose Flips
-
-Transpose flips (o12, o21 ≠ 0) are not supported. PyFAI's orientation model
-does not handle axis-swapped images.
-
-### Spatial Distortion
-
-Assumed absent. Spline and dx/dy files from .par files are preserved in the
-par dict but not used in the geometric conversion.
+The conversion between par and poni is **exact to machine precision** for all 4
+non-transpose flip→orientation pairs (tth ~2e-16 rad, sin/cos ~1e-14). The
+rotation compensation is applied consistently in both forward and reverse
+conversions, with the standard PONI formulas using the compensated rotation
+parameters. For implementation details see `par_to_poni.py`.
 ```

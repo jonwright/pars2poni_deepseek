@@ -112,9 +112,103 @@ Combining all corrections:
 4. Orientation-specific PONI formulas
 5. Round-trip uses the same compensated rotations in both directions
 
-The conversion is exact to machine precision for all 16 flip→orientation pairs.
+The conversion is exact to machine precision for all 4 non-transpose flip→orientation pairs.
+
+## Post-Mortem: Documentation Review and Cleanup
+
+After the final solution was reached, a review of the documentation files (PLAN.md,
+mapping.md, and the Python code) found **stale contradictory text and mismatches**
+left over from earlier attempts. The LLM had correctly derived and implemented the
+final compensated-rotation solution, but failed to revise the "Known Limitations"
+section and §2 algorithmic formulas to reflect the new result.
+
+### Issues Found and Fixed
+
+**PLAN.md:**
+- The "Known Limitations" section claimed ~0.05 rad 2θ errors for non-native
+  orientations — directly contradicting the "Final Solution" section in the same
+  file that says exact to machine precision. Removed the stale limitation.
+- §1.4, §2.1, §2.2 still used the old (incorrect) flip→orientation mapping:
+  `(-1,1)→2` and `(1,1)→1`. Corrected to `(-1,1)→1` and `(1,1)→2` to match
+  the code's `_FLIP_TO_ORIENTATION` dict.
+- §3.1 function signatures included `wavelength_m` and `par_length_unit`
+  parameters that don't exist in the actual code — those parameters live in the
+  IO layer (`read_par`/`write_par`), not in the conversion functions. Fixed.
+- §0 claimed `omegasign` and `fit_tolerance` default to zero; code uses 1.0 and
+  0.05 respectively. Corrected.
+- Added a note to §2 clarifying that the formulas show the uncompensated mapping
+  and the code applies rotation compensation per §5.
+
+**mapping.md:**
+- Section 13 ("Known Limitations") repeated the same stale ~0.05 rad claim.
+  Removed entirely.
+- §7 had the old flip→orientation mapping table and pseudocode. Corrected to match
+  the code.
+- §12 had contradictory conclusions (old limitation text + final solution text
+  in the same section). Replaced with a single accurate conclusion.
+- Added compensation context notes to §3 (rotation mapping), §5 (distance formulas),
+  and §11 (pseudocode) since those sections present the uncompensated form.
+
+**par_to_poni.py:**
+- Module docstring claimed "All 16 flip→orientation pairs" — only 4 non-transpose
+  pairs are implemented. Corrected.
+- `par_to_poni()` and `poni_to_par()` docstrings had empty Parameters sections.
+  Filled in.
+- `_compute_id11_from_pyfai()` docstring referenced a non-existent variable Q
+  and described the wrong algorithm. Rewrote to match the actual implementation.
+- Comment referenced `Z·Z = I` for a 3×2 matrix (invalid dimensions). Corrected
+  to `Z^T·Z = I₂`.
+
+### Root Cause: LLM Output Drift
+
+The LLM generated the documents **incrementally** over multiple reasoning steps.
+When earlier reasoning was superseded (e.g., "only orient 3 is exact" was
+replaced by "all 4 are exact"), the model failed to revisit and revise the
+earlier text. This is a failure mode specific to large-generation tasks where
+conclusions change mid-stream.
+
+The pattern was:
+1. Early sections written with a temporary conclusion
+2. Later sections written with the corrected conclusion
+3. Both co-exist, creating internal contradictions
+
+### Mitigation Strategy for LLM Agent Programming
+
+When using LLM agents for multi-file programming tasks with evolving understanding:
+
+1. **Require a "final review" pass.** Before accepting output, instruct the
+   agent to re-read all generated files and flag every factual claim that
+   appears in more than one location. Any contradiction is a bug.
+
+2. **Use single-source-of-truth patterns.** Express key facts (mapping tables,
+   function signatures, known limitations) in exactly ONE file, referenced
+   by others. Duplication invites drift. For this project: the code IS the
+   spec; markdown files should cite it, not reinvent it.
+
+3. **Tests that validate documentation.** Write assertions that parse markdown
+   tables and compare them against the code's data structures. E.g., extract
+   the flip→orientation table from PLAN.md and assert it matches
+   `_FLIP_TO_ORIENTATION`.
+
+4. **Separate derivation from specification.** Derivation documents (like
+   mapping.md) should clearly label which sections are "working notes from
+   exploration" vs "final validated result." When the LLM advances to a new
+   conclusion, it should strike through or remove the working notes, not
+   append the new conclusion below them.
+
+5. **Round-trip the conclusions.** After generating all files, ask the LLM
+   to re-read them and answer the question: "What is the known accuracy of
+   the conversion for non-native orientations?" If it gives two different
+   answers from different parts of the output, there's a bug.
+
+6. **Versioned thinking.** Tag each section with the "attempt number" that
+   produced it. When a new attempt supersedes an old one, deprecate or
+   delete sections from the old attempt. The story.md attempt log helps
+   with this, but the derivative documents (PLAN.md, mapping.md) were not
+   cleaned up accordingly.
 
 ## LLM Attribution
 
-Model used: DeepSeek V4 Pro on medium thinking.
-Total cost: $0.74.
+Model used: DeepSeek V4 Pro on medium thinking (generation).
+Review cleanup: DeepSeek V4 Pro, same session.
+Total original cost: $0.74.
