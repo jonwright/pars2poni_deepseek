@@ -6,6 +6,7 @@
 2. Derive clean algebraic mappings between `.par` and `.poni` parameters
 3. Implement IO + conversion functions with correct round-trips
 4. Test with all 4 supported flips on a strongly tilted detector
+5. Test on a non-square detector (200×128) to verify per-axis pixel reordering
 
 ## Scope / Clarifications (from user input)
 
@@ -67,11 +68,13 @@ From `geometry_conversion.rst:619-635` and verified in `imaged11.py:142-144,195-
 R_pyFAI = R₃(θ₃) · R₂(-θ₂) · R₁(-θ₁)
 ```
 R₁, R₂ are left-handed (negated angles); R₃ is right-handed.
+Implemented via `scipy.spatial.transform.Rotation.from_euler('ZYX', [rot3, -rot2, -rot1])`.
 
 **ImageD11 rotation matrix** (`transform.py:51-82`):
 ```
 R_ID11 = R₁(θx) · R₂(θy) · R₃(θz)   [all right-handed]
 ```
+Implemented via `scipy.spatial.transform.Rotation.from_euler('XYZ', [tilt_x, tilt_y, tilt_z])`.
 
 Despite different conventions, the effective rotation order is the same (verified
 in `geometry_conversion.rst:601-617`).
@@ -134,7 +137,7 @@ peaks_on_detector[0, :] = (peaks[0, :] - z_center) * z_size   # no 0.5
 peaks_on_detector[1, :] = (peaks[1, :] - y_center) * y_size
 ```
 
-PyFAI computes the pixel center: `p = pixel * (index + 0.5)`.  
+PyFAI computes the pixel center: `p = pixel * (index + 0.5)`.
 ImageD11 operates on floating-point coordinates directly: `offset = pixel * (coord - center)`.
 
 **Consequence for beam center**:
@@ -212,75 +215,92 @@ To avoid wrap-around issues: compare `sin(chi)` vs `sin(90°-eta)` and `cos(chi)
 4. No round-trip test exists for all 4 orientations
 5. 0.5 pixel offset unaccounted for in either direction
 
+### 1.9 pyFAI Orientation Implementation (source-code review)
+
+From `pyFAI/detectors/_common.py:657-678` (`_reorder_indexes_from_orientation`):
+
+```python
+if center:
+    shape1 = self.shape[0] - 1   # first element of shape tuple
+    shape2 = self.shape[1] - 1   # second element of shape tuple
+
+if orientation == 2:  d1 = shape1 - d1       # d1 flip uses shape[0]-1
+elif orientation == 4:  d2 = shape2 - d2     # d2 flip uses shape[1]-1
+elif orientation == 1:  d1 = shape1 - d1; d2 = shape2 - d2
+```
+
+From `pyFAI/ext/_geometry.pyx:68-105` (`f_t1`/`f_t2`):
+
+```c
+// f_t1: orient = -1 if (orient==1 || orient==2) else 1
+// f_t2: orient = -1 if (orient==1 || orient==4) else 1
+```
+
+**Two-level orientation mechanism:**
+
+| Orient | Pixel reorder (pre-rotation) | Sign flip (post-rotation) |
+|--------|------------------------------|---------------------------|
+| 3 | none | none |
+| 2 | d1 = shape[0]-1 - d1 | t1 = -t1 |
+| 4 | d2 = shape[1]-1 - d2 | t2 = -t2 |
+| 1 | both reorders | both flips |
+
+Note: pyFAI's `shape` tuple is `(dim0, dim1)` where `dim0` is the first array
+dimension (traditionally "fast" in C-order, "slow" in F-order). The naming
+`shape1`/`shape2` in the source code reflects array indexing order, not a
+physical axis convention. Regardless of interpretation, the code uses `shape[0]`
+for d1 flips and `shape[1]` for d2 flips — this is the implemented behaviour
+that the conversion must match and that the tests verify.
+
 ---
 
-## 2. MATHEMATICAL MAPPINGS (with 0.5 correction)
+## 2. MATHEMATICAL MAPPINGS
 
-> **Note**: §§2.1–2.2 below show the **standard** (uncompensated) formulas valid for
-> orientation 3 only. The actual code applies rotation compensation (see §5) to
-> achieve exact matching for all 4 orientations. The PONI formulas in §2.2 use
-> compensated rotation parameters in the implementation.
-
-### 2.1 pyFAI → ImageD11
+### 2.1 pyFAI → ImageD11 (poni_to_par direction)
 
 Given: `L, poni1, poni2, rot1, rot2, rot3, pixel_v, pixel_h, orientation, wavelength`
 
 ```
-# Along-beam distance
+# Recover along-beam distance (uses compensated rotations)
 Δ  = L / (cos(rot1) · cos(rot2))
 
-# Tilts (ImageD11 uses all right-handed)
-tilt_x = rot3
-tilt_y = rot2
-tilt_z = -rot1
+# Recover ID11 tilts from compensated pyFAI rotation
+tr1, tr2, tr3 = decompensate(rot1, rot2, rot3, orientation)
+tilt_x = tr3
+tilt_y = tr2
+tilt_z = -tr1
 
-# Beam center in floating-point pixel coordinates (with 0.5 correction)
-z_center = (poni1 + L · tan(rot2) / cos(rot1)) / pixel_v - 0.5
-y_center = (poni2 - L · tan(rot1)) / pixel_h - 0.5
-
-# Pixel sizes
-z_size = pixel_v
-y_size = pixel_h
-
-# Flip matrix from orientation:
-#   orientation 3 → o11=1, o12=0, o21=0, o22=-1  (native)
-#   orientation 1 → o11=-1, o12=0, o21=0, o22=1  (flip both)
-#   orientation 4 → o11=-1, o12=0, o21=0, o22=-1 (flip fast)
-#   orientation 2 → o11=1, o12=0, o21=0, o22=1   (flip slow)
-
-# Wavelength: pyFAI (m) → ImageD11 (Å)
-wavelength_Å = wavelength_m * 1e10
+# Beam center: reverse the orientation-specific PONI formula
+# For orientation 3 (native):
+#   z_center = (poni1 + L·tan(rot2)/cos(rot1)) / pixel_v - 0.5
+# For orientation 2 or 1 (d1 flipped):
+#   z_center = shape[0]-1 + 0.5 - (poni1 + L·tan(rot2)/cos(rot1)) / pixel_v
+#   (and analogously for y_center with shape[1]-1 for d2-flipped orientations)
 ```
 
-### 2.2 ImageD11 → pyFAI
+### 2.2 ImageD11 → pyFAI (par_to_poni direction)
 
-Given: `distance, y_center, z_center, y_size, z_size, tilt_x, tilt_y, tilt_z, o11, o22, wavelength`
+Given: `distance, y_center, z_center, y_size, z_size, tilt_x, tilt_y, tilt_z, o11, o22, wavelength` and detector shape (typically (nfast, nslow))
 
 ```
-# PyFAI rotations (rot1,rot2 left-handed; rot3 right-handed)
-rot1 = -tilt_z
-rot2 = tilt_y
-rot3 = tilt_x
+# Standard tilt mapping (standard rotations, before compensation)
+r1 = -tilt_z
+r2 = tilt_y
+r3 = tilt_x
+
+# Compensated rotations from S·R_comp·C = R_tilt·Z
+rot1, rot2, rot3 = compensate(o11, o22, orientation, r1, r2, r3)
 
 # Orthogonal distance
-L = distance · cos(tilt_y) · cos(tilt_z)
+L = distance · cos(rot2) · cos(rot1)
 
-# PONI coordinates (with 0.5 correction)
-poni1 = -distance · sin(tilt_y) + z_size · (z_center + 0.5)
-poni2 = -distance · cos(tilt_y) · sin(tilt_z) + y_size · (y_center + 0.5)
-
-# Pixel sizes (meters internally)
-pixel_v = z_size
-pixel_h = y_size
-
-# Orientation from flip matrix:
-#   (1,0,0,-1) → orientation 3
-#   (-1,0,0,1) → orientation 1
-#   (-1,0,0,-1) → orientation 4
-#   (1,0,0,1) → orientation 2
-
-# Wavelength: ImageD11 (Å) → pyFAI (m)
-wavelength_m = wavelength_Å * 1e-10
+# PONI coordinates (orientation-specific, with 0.5 correction)
+# Orientation 3 (native):
+#   poni1 = -distance·sin(rot2) + z_size·(z_center + 0.5)
+# Orientation 2 or 1 (d1 flipped, uses shape[0]-1):
+#   poni1 = -distance·sin(rot2) + z_size·(shape[0]-1 - z_center + 0.5)
+# Orientation 4 or 1 (d2 flipped, uses shape[1]-1):
+#   poni2 = distance·cos(rot2)·sin(rot1) + y_size·(shape[1]-1 - y_center + 0.5)
 ```
 
 ### 2.3 2θ / q Invariance
@@ -319,20 +339,20 @@ poni_to_par(par_to_poni(par)) ≈ par      (par round-trip)
 ### 3.1 `par_to_poni.py` — Conversion + IO
 
 Functions:
-- `par_to_poni(par)` → poni dict
-- `poni_to_par(poni)` → par dict
+- `par_to_poni(par, detector_shape=None)` → poni dict
+- `poni_to_par(poni, detector_shape=None)` → par dict
 - `read_par(filepath, par_length_unit="um")` → dict
 - `write_par(par_dict, filepath, par_length_unit="um")` → None
 - `read_poni(filepath)` → dict
 - `write_poni(poni_dict, filepath)` → None
 
-The `par_length_unit` parameter determines the conversion factor between internal
-length unit (meters) and par file length units. Options: `"um"` (µm, default), `"mm"`, `"m"`.
+The `detector_shape` parameter is a `(fast_dim, slow_dim)` tuple needed for
+non-native orientations to compute orientation-specific PONI formulas that
+account for pyFAI's pixel reordering. Defaults to square inferred from beam
+center.
 
-Units:
-- **Internal**: All lengths in **meters**, wavelength in **meters**
-- **par file**: length units per `par_length_unit`, wavelength in **angstrom** (Å)
-- **poni file**: lengths in **meters**, wavelength in **meters**
+Dependencies: `numpy`, `scipy` (for `scipy.spatial.transform.Rotation`).
+All internal units: meters for lengths, meters for wavelength.
 
 ### 3.2 `mapping.md` — Mathematical Derivations
 
@@ -341,15 +361,17 @@ the 0.5 correction derivation and azimuth mapping.
 
 ### 3.3 `test_conversion.py` — Test Suite
 
-Tests (using pyFAI AzimuthalIntegrator and ImageD11 transform):
+Tests (using pyFAI AzimuthalIntegrator and ImageD11 `compute_tth_eta`/`compute_xyz_lab`):
 
 1. **Round-trip tests** for all 4 orientations and multiple tilt combos
-2. **2θ matching**: pyFAI `tth()` vs ImageD11 `PixelLUT.tth`
-3. **Azimuth matching**: sin/cos comparison of chi vs 90°-eta
-4. **Edge cases**: zero tilts, max tilts, edge beam positions
+2. **2θ matching**: pyFAI `tth()` vs ImageD11 `compute_tth_eta` — same raw pixels, no flipping
+3. **Azimuth matching**: sin/cos comparison of chi vs 90°-eta — same raw pixels, no flipping
+4. **Lab coordinate matching**: full xyz comparison on non-square 200×128 detector
+5. **Edge cases**: zero tilts, max tilts, edge beam positions
 
 Test geometry: strongly tilted detector (tilt_x=0.3, tilt_y=0.2, tilt_z=-0.15 rad),
-1000×1000 px, 75µm pixels, 150mm distance, Cu Kα wavelength.
+75µm pixels, 150mm distance, Cu Kα wavelength. Square (1000×1000) for most tests,
+non-square (200×128) for the coordinate-level test.
 
 ---
 
@@ -359,49 +381,78 @@ Test geometry: strongly tilted detector (tilt_x=0.3, tilt_y=0.2, tilt_z=-0.15 ra
 |---|---|---|
 | 1 | `PLAN.md` | This plan (derived from review) |
 | 2 | `mapping.md` | Mathematical derivations with formulas and Python snippets |
-| 3 | `par_to_poni.py` | Conversion + IO functions, standalone |
+| 3 | `par_to_poni.py` | Conversion + IO functions |
 | 4 | `test_conversion.py` | Test suite running against pyFAI + ImageD11 |
 
-## 5. KNOWN LIMITATIONS
+## 5. SOLUTION: AFFINE TRANSFORMATION ANALYSIS
 
-### 4x4 Affine Transformation Analysis (Final Solution)
+Both pyFAI and ImageD11 are affine transformations from pixel coordinates to
+lab coordinates. The pyFAI pipeline decomposes into three operations:
 
-Both pyFAI and ImageD11 are affine transformations. The key insight is that the
-**effective linear map** for pyFAI is always `C_actual = diag(1, 1)` regardless
-of orientation, because the pixel reordering signs cancel the orientation C signs.
+1. **Pixel reordering** (pre-rotation): `C = diag(c1, c2)` — flips pixel indices
+   before computing physical coordinates (orientation-dependent, per `_common.py`)
+2. **Rotation**: `R` — the pyFAI rotation matrix
+3. **Sign flips** (post-rotation): `S = diag(s1, s2, 1)` — flips lab-coordinate
+   signs after rotation (orientation-dependent, per `_geometry.pyx`)
 
-The linear system for each (flip, orientation) pair:
+The ImageD11 pipeline encodes flips via the matrix Z = diag(o11, -o22) applied
+pre-rotation (in the pyFAI lab frame after G transformation).
+
+Equating the linear parts of the two affine transforms gives:
+
 ```
-S(orient) · R_comp · C_actual = R_tilt · Z(flip)
+S(orient) · R_comp · C(orient) = R_tilt · Z(flip)
 ```
-always has an exact solution where the columns of R_comp are orthonormal.
 
-**Compensation formulas** (where `r1=-tz, r2=ty, r3=tx`):
+Solving for the compensated rotation R_comp column by column:
 
-| Flip | Orient | Compensated parameters |
-|------|--------|----------------------|
-| (1,-1) | 3 | r1, r2, r3 (standard) |
-| (-1,1) | 1 | -r1-π, -r2, r3 |
-| (-1,-1) | 4 | r1-π, -r2, r3-π |
-| (1,1) | 2 | -r1, r2, r3+π |
+```
+R_comp[:,0] = S · R_tilt[:,0] · (o11 / c1)
+R_comp[:,1] = S · R_tilt[:,1] · (-o22 / c2)
+```
 
-An equivalent parametrization with `cos(r1)·cos(r2) > 0` (positive distance) is
-found by adding ±π shifts. This is what the user described as "add 180° to two
-angles."
+and the third column from cross product (ensuring det=+1).
 
-**Exact closed-form mapping**: All 4 flip→orientation pairs give machine-precision
-matching (tth ~2e-16 rad, sin/cos ~1e-14). The rotation compensation is applied
-consistently in both forward and reverse conversions, with the standard PONI
-formulas using the compensated rotation parameters.
+The compensated rotations are exact (columns orthonormal, det=+1), and the
+Euler angles are extracted via `scipy.spatial.transform.Rotation`. A
+positive-distance equivalent (`cos(r1)·cos(r2) > 0`) is found by searching
+over ±π shifts.
 
-**Conclusion**: The conversion between par and poni is exact to machine precision
-for all orientations with the corrected flip→orientation mapping and rotation
-compensation.
+The PONI constants must additionally account for orientation-specific pixel
+reordering — the beam center in native coordinates maps to `max - zc + 0.5`
+in the reordered coordinate system for d1-flipped orientations (2 and 1).
 
-### Transpose Flips
+**Conclusion**: The conversion between par and poni is exact to machine
+precision for all 4 non-transpose orientations, verified by test tolerances
+of 1e-7 rad for 2θ and azimuth, and 5e-7 m for lab coordinates, on both
+square and non-square detectors with no coordinate flipping.
 
-Not supported (o12, o21 must be 0).
+### 5.1 Remaining Limitations
 
-### Spatial Distortion
+**Transpose Flips**: Not supported (o12, o21 must be 0). PyFAI's orientation
+model does not handle axis-swapped images.
 
-Assumed absent for the geometric conversion.
+**Spatial Distortion**: Assumed absent for the geometric conversion.
+
+### 5.2 Open Question: pyFAI Orientation Model
+
+The conversion locks in pyFAI's current orientation implementation as
+observed in the source code (`_common.py:657-678`, `_geometry.pyx:68-105`).
+This includes the pixel-reordering convention where `shape[0]-1` is used for
+d1 (slow-axis) flips and `shape[1]-1` for d2 (fast-axis) flips.
+
+This is a question for the pyFAI maintainers: is this the intended
+orientation model, or should orientation be revised? Possible actions:
+
+- **Option A (lock-in)**: Accept the current pyFAI implementation as
+  definitive. Document it clearly. The conversion code and tests enshrine
+  this behaviour.
+
+- **Option B (revise)**: Propose that pyFAI's pixel reordering use per-axis
+  maximum values (`shape[1]-1` for d1/slow, `shape[0]-1` for d2/fast) so
+  that the naming is physically consistent. The conversion code would need
+  updating if pyFAI changes.
+
+This is a design decision for humans, not an LLM. The conversion code
+reflects Option A (the current pyFAI implementation). Tests pass against
+the installed version of pyFAI.

@@ -124,9 +124,10 @@ def R_ID11(tilt_x, tilt_y, tilt_z):
 
 ### Rotation parameter correspondence
 
-> **Note**: This is the standard (uncompensated) mapping valid for
-> the native orientation 3 case. For non-native orientations, the code
-> applies rotation compensation (see §12).
+> **Note**: This is the standard (uncompensated) mapping between the
+> tilt angles and pyFAI rotation parameters. For non-native orientations
+> the code applies rotation compensation (see §12) derived from equating
+> the full affine transforms including pixel reordering.
 
 The coordinate transform between the two lab frames induces:
 
@@ -203,11 +204,12 @@ For consistent mapping, we require `G · t_pyFAI_beam = t_ID11_beam = [Δ, 0, 0]
 
 ---
 
-## 5. Distance Relationship
+## 5. Distance and Beam Center Relationship
 
-> **Note**: The formulas below use standard (uncompensated) rotations.
-> The implementation applies rotation compensation (see §12) before
-> these formulas for non-native orientations.
+> **Note**: The formulas below show the **orientation 3** (native) form.
+> For other orientations the code uses compensated rotations and
+> orientation-specific beam-center formulas (see §12). The compensated
+> rotations are derived from the full affine transform equating.
 
 From the pipeline equating at zero tilts:
 
@@ -444,22 +446,22 @@ Equivalently, since `sin(90° - x) = cos(x)` and `cos(90° - x) = sin(x)`:
 
 ## 11. Complete Conversion Functions (Pseudocode)
 
-> **Note**: The pseudocode below shows the basic (uncompensated) mapping
-> for clarity. The actual implementation (`par_to_poni.py`) applies rotation
-> compensation (see §12) via `_compute_compensated_rotation()` and
-> `_compute_id11_from_pyfai()` for exact matching on all orientations.
+> **Note**: The actual implementation (`par_to_poni.py`) uses
+> `scipy.spatial.transform.Rotation` for all matrix operations,
+> numerically solves `S·R_comp·C = R_tilt·Z` for the compensated
+> rotation, and applies orientation-specific PONI formulas.
+> See `_compute_compensated_rotation()` and `par_to_poni()` in the code.
 
 ```python
 import math
 from math import cos, sin, tan
 
-def par_to_poni(par, wavelength_rel_scale=1.0):
+def par_to_poni(par, detector_shape=None):
     """
-    Convert ImageD11 par dict → pyFAI poni dict.
-    par dict keys: distance, y_center, z_center, y_size, z_size,
-                   tilt_x, tilt_y, tilt_z, o11, o12, o21, o22, wavelength
-    Returns dict: dist, poni1, poni2, rot1, rot2, rot3,
-                  pixel1, pixel2, wavelength, orientation
+    Convert ImageD11 par dict -> pyFAI poni dict.
+
+    detector_shape: (fast_dim, slow_dim) tuple. Required for non-native
+    orientations because pyFAI's pixel reordering depends on dim sizes.
     """
     tx, ty, tz = par['tilt_x'], par['tilt_y'], par['tilt_z']
     dist = par['distance']          # along-beam (meters internally)
@@ -468,51 +470,58 @@ def par_to_poni(par, wavelength_rel_scale=1.0):
     ys = par['y_size']              # meters/pixel (fast)
     zs = par['z_size']              # meters/pixel (slow)
 
-    rot1 = -tz                       # left-handed
-    rot2 = ty                        # left-handed
-    rot3 = tx                        # right-handed
+    # Standard rotation mapping (before compensation)
+    r1 = -tz
+    r2 = ty
+    r3 = tx
 
-    # Orthogonal distance
-    d = dist * cos(ty) * cos(tz)
+    # -- compensation omitted; see par_to_poni.py --
+    # rot1, rot2, rot3 = compensate(...)
 
-    # PONI with 0.5 correction
-    pon1 = -dist * sin(ty) + zs * (zc + 0.5)
-    pon2 = -dist * cos(ty) * sin(tz) + ys * (yc + 0.5)
+    # Orthogonal distance (orientation 3 form)
+    d = dist * cos(r2) * cos(r1)
+
+    # PONI with 0.5 correction (orientation 3 / native form)
+    pon1 = -dist * sin(r2) + zs * (zc + 0.5)
+    pon2 = -dist * cos(r2) * sin(r1) + ys * (yc + 0.5)
+    # For orientation 2/1 (d1 flipped): zs*(shape[0]-1 - zc + 0.5)
+    # For orientation 4/1 (d2 flipped): ys*(shape[1]-1 - yc + 0.5)
 
     o11, o12, o21, o22 = par['o11'], par.get('o12', 0), par.get('o21', 0), par['o22']
     orientation = flip_to_orientation(o11, o12, o21, o22)
 
     return {
         'dist': d, 'poni1': pon1, 'poni2': pon2,
-        'rot1': rot1, 'rot2': rot2, 'rot3': rot3,
+        'rot1': r1, 'rot2': r2, 'rot3': r3,  # compensated in real code
         'pixel1': zs, 'pixel2': ys,
-        'wavelength': par.get('wavelength', 0.0),  # internal: meters
+        'wavelength': par.get('wavelength', 0.0),
         'orientation': orientation,
     }
 
 
-def poni_to_par(poni):
+def poni_to_par(poni, detector_shape=None):
     """
-    Convert pyFAI poni dict → ImageD11 par dict.
-    poni dict keys: dist, poni1, poni2, rot1, rot2, rot3,
-                    pixel1, pixel2, wavelength, orientation
-    Returns dict: distance, y_center, z_center, ...
+    Convert pyFAI poni dict -> ImageD11 par dict.
+
+    detector_shape: needed to reverse orientation-specific PONI formulas.
     """
     L = poni['dist']
     r1, r2, r3 = poni['rot1'], poni['rot2'], poni['rot3']
     pv = poni['pixel1']
     ph = poni['pixel2']
 
-    tx = r3
-    ty = r2
-    tz = -r1
+    # -- decompensation omitted; see par_to_poni.py --
+    # tr1, tr2, tr3 = decompensate(r1, r2, r3, orient)
+    # tx, ty, tz = tr3, tr2, -tr1
 
-    # Along-beam distance
+    # Along-beam distance (orientation 3 form)
     Delta = L / (cos(r1) * cos(r2))
 
-    # Beam center with 0.5 correction
+    # Beam center with 0.5 correction (orientation 3 / native form)
     zc = (poni['poni1'] + L * tan(r2) / cos(r1)) / pv - 0.5
     yc = (poni['poni2'] - L * tan(r1)) / ph - 0.5
+    # For orientation 2/1: zc = shape[0]-1+0.5 - (poni1 + ...)/pv
+    # For orientation 4/1: yc = shape[1]-1+0.5 - (poni2 - ...)/ph
 
     orientation = poni.get('orientation', 3)
     o11, o12, o21, o22 = orientation_to_flip(orientation)
@@ -521,9 +530,9 @@ def poni_to_par(poni):
         'distance': Delta,
         'y_center': yc, 'z_center': zc,
         'y_size': ph, 'z_size': pv,
-        'tilt_x': tx, 'tilt_y': ty, 'tilt_z': tz,
+        'tilt_x': r3, 'tilt_y': r2, 'tilt_z': -r1,  # decompensated in real code
         'o11': o11, 'o12': o12, 'o21': o21, 'o22': o22,
-        'wavelength': poni.get('wavelength', 0.0),  # internal: meters
+        'wavelength': poni.get('wavelength', 0.0),
         'wedge': 0.0, 'chi': 0.0,
         'omegasign': 1.0, 'fit_tolerance': 0.05,
     }
@@ -533,85 +542,94 @@ def poni_to_par(poni):
 
 Both pyFAI and ImageD11 models are affine transformations from 2D pixel coordinates
 to 3D laboratory coordinates — a composition of scaling, flipping, rotation, and
-translation. Using 4×4 augmented (homogeneous) matrices, we can write each as:
+translation.
 
-### pyFAI
+### pyFAI Full Pipeline (per pyFAI source code)
 
+For each orientation, pyFAI applies three operations:
+
+1. **Pixel reordering** (pre-rotation): `_reorder_indexes_from_orientation`
+   in `_common.py:657` reverses pixel indices before physical-coordinate
+   computation:
+   ```
+   C(orient) = diag(c1, c2) where:
+     orient 3: c1=+1, c2=+1 (none)
+     orient 2: c1=-1, c2=+1 (d1 flipped, uses shape[0]-1)
+     orient 4: c1=+1, c2=-1 (d2 flipped, uses shape[1]-1)
+     orient 1: c1=-1, c2=-1 (both flipped)
+   ```
+
+2. **Rotation**: `R_pyFAI(rot1,rot2,rot3)` = Rz(rot3)·Ry(-rot2)·Rx(-rot1)
+
+3. **Sign flips** (post-rotation): `f_t1`/`f_t2` in `_geometry.pyx:68-105`
+   flip the signs of lab-coordinate components after rotation:
+   ```
+   S(orient) = diag(s1, s2, 1) where:
+     orient 3: s1=+1, s2=+1 (none)
+     orient 2: s1=-1, s2=+1 (t1 flipped)
+     orient 4: s1=+1, s2=-1 (t2 flipped)
+     orient 1: s1=-1, s2=-1 (both flipped)
+   ```
+
+The full pipeline (linear part) maps pixel `d` to lab coordinate `t`:
 ```
-t_lab = S(orient) · R(θ₁,θ₂,θ₃) · (C(orient) · [d₁,d₂]ᵀ + const)
-```
-
-where:
-- `C(orient)` = diag(±1, ±1) maps pixel indices to the effective linear term
-  (determined by orientation-specific pixel reordering)
-- `const` = [pv·b₁−poni₁, ph·b₂−poni₂, dist]ᵀ (including 0.5 offset and PONI)
-- `R` = rotation matrix (left-handed for rot1,rot2)
-- `S(orient)` = diag(±1, ±1, 1) applies lab-coordinate sign flips
-
-### ImageD11
-
-```
-t_lab = R'(θx,θy,θz) · M_flip · O · P · ([sc,fc]ᵀ − [zc,yc]ᵀ) + [Δ,0,0]ᵀ
-```
-
-where:
-- `P` = diag(zs, ys) — pixel size scaling
-- `O` = [[o₁₁, o₁₂],[o₂₁, o₂₂]] — flip matrix
-- `M_flip` = [[0,0],[0,1],[1,0]] — maps (fz,fy) → (0,fy,fz) in 3D
-- `R'` = rotation matrix (all right-handed)
-- `[Δ,0,0]ᵀ` — beam-axis translation
-
-### Equating the Linear Parts (Flat Detector)
-
-In the pyFAI lab frame (applying G to both sides and setting R=R'=I):
-
-```
-S(orient) · C(orient) = G · M_flip · O · P = Z
+t = S · R · C · d + constant
 ```
 
-where `G = [[0,0,1],[0,−1,0],[1,0,0]]` and:
+### ImageD11 Pipeline
 
+ID11 applies the flip matrix Z = diag(o11, -o22) pre-rotation:
 ```
-Z = [[o₁₁·zs, 0], [0, −o₂₂·ys], [0, 0]]     (non-transpose)
-```
-
-Computing `S(orient)·C(orient)` for each orientation shows:
-
-| Orientation | S | C | S·C |
-|---|---|---|---|
-| 3 (native) | (1,1,1) | (+1,+1) | (+1,+1) |
-| 2 (flip slow) | (−1,1,1) | (−1,+1) | (+1,+1) |
-| 4 (flip fast) | (1,−1,1) | (+1,−1) | (+1,+1) |
-| 1 (flip both) | (−1,−1,1) | (−1,−1) | (+1,+1) |
-
-**All orientations produce the same effective linear product (1,1).**
-
-Since pyFAI's orientation model always yields `C_actual = diag(1, 1)`, the linear
-system for each (flip, orientation) pair is:
-
-```
-S(orient) · R_comp · C_actual = R_tilt · Z(flip)
+t_ID11 = R_id11 · Z · d + constant    [in ID11 lab frame]
+t_pyFAI = G · t_ID11 = G · R_id11 · Z · d + constant   [in pyFAI lab frame]
 ```
 
-This always has an exact solution where the columns of R_comp are orthonormal.
-The compensation produces rotated parameters that differ from the standard
-mapping by ±π shifts on two angles, giving `cos(r1)·cos(r2) > 0` (positive
-distance).
+Where R_tilt (pyFAI standard rotation) = G · R_id11 · G (transformed to
+pyFAI frame).
 
-**Compensated rotation parameters** (where `r1=-tz, r2=ty, r3=tx`):
+### Equating the Linear Parts
 
-| Flip | Orient | rot1 | rot2 | rot3 |
-|------|--------|------|------|------|
-| (1,−1) | 3 | r₁ | r₂ | r₃ |
-| (−1,1) | 1 | −r₁−π | −r₂ | r₃ |
-| (−1,−1) | 4 | r₁−π | −r₂ | r₃−π |
-| (1,1) | 2 | −r₁ | r₂ | r₃+π |
+For the lab coordinates to match for all pixels, the linear mappings must
+be identical:
+
+```
+S(orient) · R_comp · C(orient) = R_tilt · Z(flip)
+```
+
+This is a 3×2 matrix equation (first two columns). The compensated
+rotation R_comp is found by solving column-by-column:
+
+```
+R_comp[:,0] = S · R_tilt[:,0] · (o11 / c1)
+R_comp[:,1] = S · R_tilt[:,1] · (-o22 / c2)
+```
+
+The third column is the cross product, ensuring det(R_comp) = +1.
+
+The solution exists and is orthonormal for all 4 non-transpose
+flip→orientation pairs because the column scaling factors (o11/c1)
+and (-o22/c2) have magnitude 1 and the resulting columns are mutually
+orthogonal (they differ from the original rotation's columns only by
+element-wise sign changes, which preserve orthogonality).
+
+### PONI Formulas (Constant Term)
+
+The constant term of the affine transform encodes the beam intersection
+point. Because pyFAI reorders pixel indices for non-native orientations,
+the beam center in native coordinates maps differently:
+
+- Orient 3: beam at (zc, yc) → poni1 uses `zc + 0.5`
+- Orient 2 or 1: beam at (zc, yc), but d1 reordered → poni1 uses
+  `shape[0]-1 - zc + 0.5`
+- Orient 4 or 1: beam at (zc, yc), but d2 reordered → poni2 uses
+  `shape[1]-1 - yc + 0.5`
 
 ### Conclusion
 
-The conversion between par and poni is **exact to machine precision** for all 4
-non-transpose flip→orientation pairs (tth ~2e-16 rad, sin/cos ~1e-14). The
-rotation compensation is applied consistently in both forward and reverse
-conversions, with the standard PONI formulas using the compensated rotation
-parameters. For implementation details see `par_to_poni.py`.
+The conversion between par and poni is exact for all 4 non-transpose
+flip→orientation pairs. The compensated rotation handles the sign-flip
+non-commutativity, and orientation-specific PONI formulas handle the
+pixel reordering. Verified by test tolerances of 1e-7 rad (2θ, azimuth)
+and 5e-7 m (lab coordinates) on a non-square 200×128 detector with no
+coordinate flipping. For implementation details see `par_to_poni.py`.
 ```

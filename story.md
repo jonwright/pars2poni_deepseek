@@ -207,8 +207,117 @@ When using LLM agents for multi-file programming tasks with evolving understandi
    with this, but the derivative documents (PLAN.md, mapping.md) were not
    cleaned up accordingly.
 
+## Referee Feedback and Improvements
+
+After posting the solution, two independent referees reviewed the code.
+
+### Issues Raised
+
+**Referee 1 (Gemini, issue #1):**
+- Suggested using `scipy.spatial.transform.Rotation` to replace manual Euler-angle
+  logic, avoiding conditional ±π offset tables and gimbal-lock edge cases.
+- Confirmed the mathematical reasoning is sound.
+
+**Referee 2 (ChatGPT, issue #2):**
+- Questioned whether changing rotation parameters (compensation) preserves their
+  physical meaning.
+- Requested coordinate-level equivalence tests (xyz lab coords, not just tth).
+- Wanted validation against pyFAI's actual rotation matrix implementation.
+- Noted the solution only supports 4 of 8 possible flip matrices (no transpose).
+
+### Changes Made
+
+1. **scipy refactor** (`par_to_poni.py`): Replaced ~80 lines of manual 3×3 matrix
+   construction and multiplication with `scipy.spatial.transform.Rotation`.
+   `_pyfai_rotation_matrix` is now a one-liner; `_compute_compensated_rotation`
+   and `_compute_id11_from_pyfai` use numpy arrays instead of manual element access.
+   Added `numpy` and `scipy` as dependencies. All 20 tests still pass.
+
+2. **Coordinate-level test** (`test_conversion.py::TestLabCoordinates`): Added a
+   test that computes full xyz lab coordinates for both pyFAI and ImageD11 on a
+   128×200 non-square detector (orientation 3, native). Compares via the G
+   transformation matrix. 2000 random pixels → max diff < 5e-7 m. Resolves
+   Referee 2's main validation concern for the native orientation.
+
+3. **Key finding from the coordinate test**: For non-native orientations, raw
+   pixel indices cannot be compared directly between codes because pyFAI applies
+   internal pixel reordering. The existing tth/chi tests (which pre-flip
+   coordinates) correctly verify angular equivalence for all 4 orientations.
+   The coordinate test proves the conversion is exact for orientation 3 at the
+   full xyz level.
+
+4. **pyFAI rotation validation**: The scipy refactor was verified to produce
+   identical rotation matrices to pyFAI's `Rz(rot3)·Ry(-rot2)·Rx(-rot1)`
+   (verified in par_to_poni.py test) and to ImageD11's `Rx(tx)·Ry(ty)·Rz(tz)`
+   (verified in TestLabCoordinates).
+
+### Remaining Limitation
+
+Transpose flips (o12, o21 ≠ 0 where o11/o22 may be 0) are still not supported.
+The 4×4 affine analysis shows exact solutions exist for all 16 flip→orientation
+pairs, but implementing transpose flips requires:
+- Understanding pyFAI's orientation's effect on the effective pixel-reordering
+  matrix for transpose cases
+- Testing that the coordinate-level match holds with transpose
+
+## Final Resolution: Correcting the 4×4 Affine Analysis
+
+### The Error
+
+The original compensated-rotation derivation (Attempt 5) assumed that pyFAI's
+pixel reordering signs cancel the orientation sign flips, giving
+`C_actual = diag(1, 1)` for all orientations. This was incorrect.
+PyFAI applies pixel reordering and sign flips at **different stages** of
+the pipeline (pre-rotation vs post-rotation), so they do not cancel.
+The correct equation involves the full C matrix from pixel reordering:
+
+```
+S(orient) · R_comp · C(orient) = R_tilt · Z(flip)
+```
+
+where `C = diag(c1, c2)` encodes pyFAI's `_reorder_indexes_from_orientation`
+and `S = diag(s1, s2, 1)` encodes pyFAI's `f_t1`/`f_t2` sign flips.
+Both are read directly from the pyFAI source code.
+
+### The Fix
+
+Solving `R_comp[:,k] = S · R_tilt[:,k] · Z_kk / c_k` column-by-column
+gives the correct compensated rotation. Additionally, the PONI formulas
+must use orientation-specific beam-center mappings:
+
+```
+Orientation 2/1 (d1 flipped): poni1 = -Δ·sin(r2) + pv·(shape[0]-1 - zc + 0.5)
+Orientation 4/1 (d2 flipped): poni2 =  Δ·cos(r2)·sin(r1) + ph·(shape[1]-1 - yc + 0.5)
+```
+
+The `shape[0]-1` and `shape[1]-1` come from pyFAI's implementation
+(`_common.py:662-664`), which uses `shape[0]` for d1 flips and `shape[1]`
+for d2 flips.
+
+### Result
+
+All 4 orientations now match to machine precision with NO coordinate
+flipping. Tests verify:
+- Same raw pixel indices produce same 2θ (tolerance 1e-7 rad)
+- Same raw pixel indices produce same chi (tolerance 1e-7 rad on sin/cos)
+- Same raw pixel indices produce same xyz lab coords on non-square 200×128
+  detector (tolerance 5e-7 m)
+- Round-trip par↔poni preserves all parameters
+
+### PyFAI Orientation Naming Convention
+
+PyFAI's `_reorder_indexes_from_orientation` uses `shape1 = self.shape[0]-1`
+for d1 and `shape2 = self.shape[1]-1` for d2. In pyFAI, `shape` is a
+(dim0, dim1) tuple reflecting array indexing order. The conversion code
+locks in this implementation — renaming or changing the convention in
+pyFAI would require corresponding updates here.
+
+### Cost
+
+Referee resolution + full rewrite of compensation + non-square detector
+tests + documentation consistency audit: $0.32
+
 ## LLM Attribution
 
-Model used: DeepSeek V4 Pro on medium thinking (generation).
-Review cleanup: DeepSeek V4 Pro, same session.
-Total original cost: $0.74.
+Model used: DeepSeek V4 Pro on medium thinking (generation and all revisions).
+Total cost: $1.06 ($0.74 original + $0.32 referee resolution).

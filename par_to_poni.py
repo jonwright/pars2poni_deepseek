@@ -1,28 +1,36 @@
 """
 par_to_poni.py — Convert between ImageD11 .par and pyFAI .poni geometry parameters.
 
-Based on the 4x4 affine matrix analysis of the two geometry frameworks.
-All 4 non-transpose flip→orientation pairs have exact closed-form solutions
-via rotation compensation. Transpose flips (o12,o21≠0) are not supported.
+Based on the pyFAI source code analysis of orientation handling:
+- Pixel reordering: _reorder_indexes_from_orientation  (_common.py:657)
+- Sign flips: f_t1 / f_t2                            (_geometry.pyx:68-105)
 
-No dependencies beyond Python stdlib. All internal units are meters for lengths
-and meters for wavelength.
+Equating the full affine transforms gives exact closed-form solutions
+for all 4 non-transpose flip->orientation pairs, including the pixel
+reordering (C matrix) and post-rotation sign flips (S matrix).
+Transpose flips (o12,o21!=0) are not supported.
+
+Dependencies: numpy, scipy (for Rotation). All internal units are meters for
+lengths and meters for wavelength.
 
 Usage:
     import par_to_poni as pp
 
     par = pp.read_par("geometry.par")
-    poni = pp.par_to_poni(par)
+    poni = pp.par_to_poni(par, detector_shape=(200, 128))
     pp.write_poni(poni, "geometry.poni")
 
     poni = pp.read_poni("geometry.poni")
-    par = pp.poni_to_par(poni)
+    par = pp.poni_to_par(poni, detector_shape=(200, 128))
     pp.write_par(par, "geometry.par")
 """
 
 import json
 import math
 from math import cos, sin, tan, atan2, pi, sqrt
+
+import numpy as np
+from scipy.spatial.transform import Rotation as ScipyRotation
 
 
 # ---------------------------------------------------------------------------
@@ -73,49 +81,28 @@ def orientation_to_flip(orientation):
 # ---------------------------------------------------------------------------
 
 def _pyfai_rotation_matrix(rot1, rot2, rot3):
-    """pyFAI rotation matrix:  Rz(rot3)·Ry_left(rot2)·Rx_left(rot1).
+    """pyFAI rotation matrix: Rz(rot3).Ry_left(rot2).Rx_left(rot1).
 
-    This equals Rz(rot3)·Ry(-rot2)·Rx(-rot1) in standard right-handed
-    convention, matching pyFAI's rotation_matrix() output.
+    In standard right-handed convention this equals:
+        Rz(rot3) . Ry(-rot2) . Rx(-rot1)
+    which is intrinsic ZYX with angles [rot3, -rot2, -rot1].
+    Matches pyFAI's rotation_matrix() output.
+
+    Returns a tuple-of-tuples for backward compatibility.
     """
-    s1, c1 = sin(rot1), cos(rot1)
-    s2, c2 = sin(rot2), cos(rot2)
-    s3, c3 = sin(rot3), cos(rot3)
-
-    Rx = ((1, 0, 0), (0, c1, s1), (0, -s1, c1))
-    Ry = ((c2, 0, -s2), (0, 1, 0), (s2, 0, c2))
-    Rz = ((c3, -s3, 0), (s3, c3, 0), (0, 0, 1))
-
-    a00 = Ry[0][0] * Rx[0][0] + Ry[0][1] * Rx[1][0] + Ry[0][2] * Rx[2][0]
-    a01 = Ry[0][0] * Rx[0][1] + Ry[0][1] * Rx[1][1] + Ry[0][2] * Rx[2][1]
-    a02 = Ry[0][0] * Rx[0][2] + Ry[0][1] * Rx[1][2] + Ry[0][2] * Rx[2][2]
-    a10 = Ry[1][0] * Rx[0][0] + Ry[1][1] * Rx[1][0] + Ry[1][2] * Rx[2][0]
-    a11 = Ry[1][0] * Rx[0][1] + Ry[1][1] * Rx[1][1] + Ry[1][2] * Rx[2][1]
-    a12 = Ry[1][0] * Rx[0][2] + Ry[1][1] * Rx[1][2] + Ry[1][2] * Rx[2][2]
-    a20 = Ry[2][0] * Rx[0][0] + Ry[2][1] * Rx[1][0] + Ry[2][2] * Rx[2][0]
-    a21 = Ry[2][0] * Rx[0][1] + Ry[2][1] * Rx[1][1] + Ry[2][2] * Rx[2][1]
-    a22 = Ry[2][0] * Rx[0][2] + Ry[2][1] * Rx[1][2] + Ry[2][2] * Rx[2][2]
-
-    return (
-        (Rz[0][0] * a00 + Rz[0][1] * a10 + Rz[0][2] * a20,
-         Rz[0][0] * a01 + Rz[0][1] * a11 + Rz[0][2] * a21,
-         Rz[0][0] * a02 + Rz[0][1] * a12 + Rz[0][2] * a22),
-        (Rz[1][0] * a00 + Rz[1][1] * a10 + Rz[1][2] * a20,
-         Rz[1][0] * a01 + Rz[1][1] * a11 + Rz[1][2] * a21,
-         Rz[1][0] * a02 + Rz[1][1] * a12 + Rz[1][2] * a22),
-        (Rz[2][0] * a00 + Rz[2][1] * a10 + Rz[2][2] * a20,
-         Rz[2][0] * a01 + Rz[2][1] * a11 + Rz[2][2] * a21,
-         Rz[2][0] * a02 + Rz[2][1] * a12 + Rz[2][2] * a22),
-    )
+    R = ScipyRotation.from_euler('ZYX', [rot3, -rot2, -rot1]).as_matrix()
+    return ((R[0, 0], R[0, 1], R[0, 2]),
+            (R[1, 0], R[1, 1], R[1, 2]),
+            (R[2, 0], R[2, 1], R[2, 2]))
 
 
 def _extract_rot(R):
     """Extract rot1,rot2,rot3 from a pyFAI rotation matrix.
 
-    R = Rz(rot3)·Ry_left(rot2)·Rx_left(rot1).
-    Entries: R[2,0]=sin(rot2), R[2,1]=-cos(rot2)·sin(rot1),
-             R[2,2]=cos(rot2)·cos(rot1),
-             R[1,0]=sin(rot3)·cos(rot2), R[0,0]=cos(rot3)·cos(rot2).
+    R = Rz(rot3).Ry_left(rot2).Rx_left(rot1).
+    Entries: R[2,0]=sin(rot2), R[2,1]=-cos(rot2).sin(rot1),
+             R[2,2]=cos(rot2).cos(rot1),
+             R[1,0]=sin(rot3).cos(rot2), R[0,0]=cos(rot3).cos(rot2).
     """
     r00, r01, r02 = R[0]
     r10, r11, r12 = R[1]
@@ -136,26 +123,23 @@ def _extract_rot(R):
     return rot1, rot2, rot3
 
 
-def _find_positive_equiv(R_comp):
-    """Find an equivalent (rot1,rot2,rot3) for R_comp with cos(rot1)·cos(rot2)>0.
-
-    Returns (rot1, rot2, rot3) or None if no positive-dist equivalent found.
-    """
-    a, b, c = _extract_rot(R_comp)
+def _find_positive_equiv_from_angles(rot1, rot2, rot3):
+    """Find equivalent Euler angles with cos(rot1)*cos(rot2) > 0."""
     best = None
+    R_target = _pyfai_rotation_matrix(rot1, rot2, rot3)
     for d1 in (0, pi, -pi, 2 * pi):
         for d2 in (0, pi, -pi, 2 * pi):
             for s2 in (1, -1):
-                rt1, rt2, rt3 = a + d1, s2 * b + d2, c
+                rt1, rt2, rt3 = rot1 + d1, s2 * rot2 + d2, rot3
                 if abs(rt1) > 10 or abs(rt2) > 10:
                     continue
                 Rt = _pyfai_rotation_matrix(rt1, rt2, rt3)
-                maxdiff = max(abs(Rt[i][j] - R_comp[i][j])
+                maxdiff = max(abs(Rt[i][j] - R_target[i][j])
                              for i in range(3) for j in range(3))
                 if maxdiff < 1e-8:
                     dc = cos(rt1) * cos(rt2)
                     if dc > 0:
-                        if best is None or abs(rt1) + abs(rt2) < abs(best[0]) + abs(best[1]):
+                        if best is None or abs(rt1)+abs(rt2) < abs(best[0])+abs(best[1]):
                             best = (rt1, rt2, rt3)
     return best
 
@@ -167,115 +151,86 @@ def _find_positive_equiv(R_comp):
 def _compute_compensated_rotation(o11, o22, orient, r1_std, r2_std, r3_std):
     """Compute compensated pyFAI rotation for a given (flip, orientation) pair.
 
-    Uses the linear system: S·R_comp·C_actual = R_tilt·Z where
-    C_actual = diag(1,1) (the effective linear map after pixel reordering).
+    Derivation: equating the full pyFAI pipeline against the ID11 pipeline.
+    For each orientation, pyFAI applies:
+      - Pixel reordering: C = diag(c1, c2)  pre-rotation
+      - Rotation: R
+      - Sign flips:  S = diag(s1, s2, 1)  post-rotation
 
-    Returns (rot1, rot2, rot3) with cos(rot1)·cos(rot2) > 0.
+    ID11 applies the flip matrix Z = diag(o11, -o22) pre-rotation (in the
+    pyFAI lab frame after G transformation).  The linear constraint is:
+
+        S . R_comp . C = R_tilt . Z
+
+    Solving:  R_comp[:,0] = S . R_tilt[:,0] . (o11 / c1)
+              R_comp[:,1] = S . R_tilt[:,1] . (-o22 / c2)
+
+    Returns (rot1, rot2, rot3) with cos(rot1).cos(rot2) > 0.
     """
     S_diag = {3: (1, 1, 1), 2: (-1, 1, 1), 4: (1, -1, 1), 1: (-1, -1, 1)}[orient]
-    R_tilt = _pyfai_rotation_matrix(r1_std, r2_std, r3_std)
+    c1 = -1.0 if orient in (2, 1) else 1.0
+    c2 = -1.0 if orient in (4, 1) else 1.0
 
-    # Z = [[o11, 0], [0, -o22], [0, 0]] (no pixel-size scaling needed)
-    # target = S · R_tilt · Z  (3×2)
-    # R_comp[:, 0:2] = target (since C_actual = diag(1,1))
+    R_tilt = np.array(_pyfai_rotation_matrix(r1_std, r2_std, r3_std))
 
-    z_col0 = (o11, 0.0, 0.0)
-    z_col1 = (0.0, float(-o22), 0.0)
+    r_c0 = np.array([S_diag[0] * R_tilt[0, 0] * (o11 / c1),
+                     S_diag[1] * R_tilt[1, 0] * (o11 / c1),
+                     S_diag[2] * R_tilt[2, 0] * (o11 / c1)])
+    r_c1 = np.array([S_diag[0] * R_tilt[0, 1] * (-o22 / c2),
+                     S_diag[1] * R_tilt[1, 1] * (-o22 / c2),
+                     S_diag[2] * R_tilt[2, 1] * (-o22 / c2)])
 
-    # S · R_tilt · z_col0
-    Rt_z0 = (
-        R_tilt[0][0] * z_col0[0] + R_tilt[0][1] * z_col0[1] + R_tilt[0][2] * z_col0[2],
-        R_tilt[1][0] * z_col0[0] + R_tilt[1][1] * z_col0[1] + R_tilt[1][2] * z_col0[2],
-        R_tilt[2][0] * z_col0[0] + R_tilt[2][1] * z_col0[1] + R_tilt[2][2] * z_col0[2],
-    )
-    target_c0 = (
-        S_diag[0] * Rt_z0[0], S_diag[1] * Rt_z0[1], S_diag[2] * Rt_z0[2],
-    )
+    r_c2 = np.cross(r_c0, r_c1)
+    if np.linalg.det(np.column_stack([r_c0, r_c1, r_c2])) < 0:
+        r_c2 = -r_c2
 
-    Rt_z1 = (
-        R_tilt[0][0] * z_col1[0] + R_tilt[0][1] * z_col1[1] + R_tilt[0][2] * z_col1[2],
-        R_tilt[1][0] * z_col1[0] + R_tilt[1][1] * z_col1[1] + R_tilt[1][2] * z_col1[2],
-        R_tilt[2][0] * z_col1[0] + R_tilt[2][1] * z_col1[1] + R_tilt[2][2] * z_col1[2],
-    )
-    target_c1 = (
-        S_diag[0] * Rt_z1[0], S_diag[1] * Rt_z1[1], S_diag[2] * Rt_z1[2],
-    )
+    R_comp = np.column_stack([r_c0, r_c1, r_c2])
+    rot_s = ScipyRotation.from_matrix(R_comp)
+    angles = rot_s.as_euler('ZYX')
+    rot3_c, rot2_c, rot1_c = angles[0], -angles[1], -angles[2]
 
-    # Cross product for third column
-    r2c0 = target_c0[1] * target_c1[2] - target_c0[2] * target_c1[1]
-    r2c1 = target_c0[2] * target_c1[0] - target_c0[0] * target_c1[2]
-    r2c2 = target_c0[0] * target_c1[1] - target_c0[1] * target_c1[0]
-
-    det = (target_c0[0] * (target_c1[1] * r2c2 - target_c1[2] * r2c1)
-           - target_c1[0] * (target_c0[1] * r2c2 - target_c0[2] * r2c1)
-           + r2c0 * (target_c0[1] * target_c1[2] - target_c0[2] * target_c1[1]))
-    if det < 0:
-        r2c0, r2c1, r2c2 = -r2c0, -r2c1, -r2c2
-
-    R_comp = (
-        (target_c0[0], target_c1[0], r2c0),
-        (target_c0[1], target_c1[1], r2c1),
-        (target_c0[2], target_c1[2], r2c2),
-    )
-
-    result = _find_positive_equiv(R_comp)
+    result = _find_positive_equiv_from_angles(rot1_c, rot2_c, rot3_c)
     if result is None:
-        result = _extract_rot(R_comp)
+        result = (rot1_c, rot2_c, rot3_c)
     return result
 
 
 def _compute_id11_from_pyfai(rot1, rot2, rot3, orient):
-    """Recover original ID11 tilt rotation from compensated pyFAI params.
+    """Recover ID11 tilt rotation from compensated pyFAI params.
 
-    From the forward equation: S(orient) · R_comp = R_tilt · Z(flip),
-    we reverse to get R_tilt[:,0:2] = S · R_comp · Z and build the
-    third column via cross product, ensuring right-handed orientation.
-    Returns (tr1, tr2, tr3) as the tilt rotation angles (R3·R2·R1 convention).
+    Reverse of _compute_compensated_rotation. From the forward equation:
+      S . R_comp . C = R_tilt . Z
+    reverse:
+      R_tilt[:,0] = S . R_comp[:,0] . (c1 / o11)
+      R_tilt[:,1] = S . R_comp[:,1] . (c2 / (-o22))
     """
     S_diag = {3: (1, 1, 1), 2: (-1, 1, 1), 4: (1, -1, 1), 1: (-1, -1, 1)}[orient]
-    R_total = _pyfai_rotation_matrix(rot1, rot2, rot3)
-
-    # Build R_tilt from R_total.  Since R_comp[:,0:2] = S · R_tilt · Z
-    # and Z^T·Z = I₂ (because o11²=o22²=1), we have
-    # R_tilt[:,0:2] = S · R_comp · Z.  For the full R_tilt,
+    c1 = -1.0 if orient in (2, 1) else 1.0
+    c2 = -1.0 if orient in (4, 1) else 1.0
 
     o11, o12, o21, o22 = orientation_to_flip(orient)
-    z_col0 = (o11, 0.0, 0.0)
-    z_col1 = (0.0, float(-o22), 0.0)
+    R_comp = np.array(_pyfai_rotation_matrix(rot1, rot2, rot3))
 
-    # R_total · Z gives R_total[:, 0]*o11 and R_total[:, 1]*(-o22)
-    Rt0 = (
-        R_total[0][0] * z_col0[0], R_total[1][0] * z_col0[0], R_total[2][0] * z_col0[0],
-    )
-    Rt1 = (
-        R_total[0][1] * z_col1[1], R_total[1][1] * z_col1[1], R_total[2][1] * z_col1[1],
-    )
-    # S^{-1} = S:  Rt_col0 = S · (R_total · z0)
-    st_col0 = (S_diag[0] * Rt0[0], S_diag[1] * Rt0[1], S_diag[2] * Rt0[2])
-    st_col1 = (S_diag[0] * Rt1[0], S_diag[1] * Rt1[1], S_diag[2] * Rt1[2])
+    rt_c0 = np.array([S_diag[0] * R_comp[0, 0] * (c1 / o11),
+                      S_diag[1] * R_comp[1, 0] * (c1 / o11),
+                      S_diag[2] * R_comp[2, 0] * (c1 / o11)])
+    rt_c1 = np.array([S_diag[0] * R_comp[0, 1] * (c2 / (-o22)),
+                      S_diag[1] * R_comp[1, 1] * (c2 / (-o22)),
+                      S_diag[2] * R_comp[2, 1] * (c2 / (-o22))])
 
-    # Cross product for third column of R_tilt
-    # R_tilt[:, 2] should be the cross product of the first two columns
-    r20 = st_col0[1] * st_col1[2] - st_col0[2] * st_col1[1]
-    r21 = st_col0[2] * st_col1[0] - st_col0[0] * st_col1[2]
-    r22 = st_col0[0] * st_col1[1] - st_col0[1] * st_col1[0]
-
-    det = (st_col0[0] * (st_col1[1] * r22 - st_col1[2] * r21)
-           - st_col1[0] * (st_col0[1] * r22 - st_col0[2] * r21)
-           + r20 * (st_col0[1] * st_col1[2] - st_col0[2] * st_col1[1]))
-    if det < 0:
-        r20, r21, r22 = -r20, -r21, -r22
+    rt_c2 = np.cross(rt_c0, rt_c1)
+    if np.linalg.det(np.column_stack([rt_c0, rt_c1, rt_c2])) < 0:
+        rt_c2 = -rt_c2
 
     R_tilt = (
-        (st_col0[0], st_col1[0], r20),
-        (st_col0[1], st_col1[1], r21),
-        (st_col0[2], st_col1[2], r22),
+        (rt_c0[0], rt_c1[0], rt_c2[0]),
+        (rt_c0[1], rt_c1[1], rt_c2[1]),
+        (rt_c0[2], rt_c1[2], rt_c2[2]),
     )
-
     return _extract_rot(R_tilt)
 
 
-def par_to_poni(par):
+def par_to_poni(par, detector_shape=None):
     """Convert ImageD11 .par parameters -> pyFAI .poni parameters.
 
     Parameters
@@ -284,6 +239,11 @@ def par_to_poni(par):
         Keys: distance, y_center, z_center, y_size, z_size,
         tilt_x, tilt_y, tilt_z, o11, o12, o21, o22, wavelength.
         All lengths in meters internally, wavelength in meters.
+    detector_shape : (fast_dim, slow_dim) tuple, optional
+        Detector pixel dimensions. Required for non-native orientations
+        (2 and 4) to compute correct PONI accounting for pyFAI's
+        pixel-reordering convention. For orientation 3 (native) the
+        shape is not needed. Defaults to square inferred from beam center.
 
     Returns
     -------
@@ -305,24 +265,38 @@ def par_to_poni(par):
     o22 = int(par.get("o22", -1))
     orientation = flip_to_orientation(o11, o12, o21, o22)
     wl_m = float(par.get("wavelength", 0.0))
+    delta = distance
+
+    if detector_shape is None:
+        shape_fast = max(int(2 * yc + 1), 2)
+        shape_slow = max(int(2 * zc + 1), 2)
+        detector_shape = (shape_fast, shape_slow)
+    else:
+        shape_fast, shape_slow = int(detector_shape[0]), int(detector_shape[1])
+
+    # pyFAI _reorder_indexes_from_orientation: shape1=shape[0]-1 for d1,
+    # shape2=shape[1]-1 for d2 (axes swapped in naming -- see _common.py:662)
+    max_d1 = shape_fast - 1.0
+    max_d2 = shape_slow - 1.0
 
     # Standard tilt mapping
     r1 = -tz
     r2 = ty
     r3 = tx
 
-    # Compute compensated rotation (with positive distance)
     rot1, rot2, rot3 = _compute_compensated_rotation(o11, o22, orientation, r1, r2, r3)
 
-    delta = distance  # ImageD11 along-beam distance
-    dist = delta * cos(rot2) * cos(rot1)  # orthogonal distance to PONI
+    dist = delta * cos(rot2) * cos(rot1)
 
-    # Standard PONI formulas (same for all orientations).
-    # The orientation-specific pixel reordering is handled by the
-    # orientation flag in pyFAI; the PONI parameters are in the
-    # native un-flipped coordinate system.
-    poni1 = -delta * sin(rot2) + zs * (zc + 0.5)
-    poni2 = delta * cos(rot2) * sin(rot1) + ys * (yc + 0.5)
+    if orientation in (2, 1):
+        poni1 = -delta * sin(rot2) + zs * (max_d1 - zc + 0.5)
+    else:
+        poni1 = -delta * sin(rot2) + zs * (zc + 0.5)
+
+    if orientation in (4, 1):
+        poni2 = delta * cos(rot2) * sin(rot1) + ys * (max_d2 - yc + 0.5)
+    else:
+        poni2 = delta * cos(rot2) * sin(rot1) + ys * (yc + 0.5)
 
     return {
         "dist": dist,
@@ -338,7 +312,7 @@ def par_to_poni(par):
     }
 
 
-def poni_to_par(poni):
+def poni_to_par(poni, detector_shape=None):
     """Convert pyFAI .poni parameters -> ImageD11 .par parameters.
 
     Parameters
@@ -347,6 +321,9 @@ def poni_to_par(poni):
         Keys: dist, poni1, poni2, rot1, rot2, rot3,
         pixel1, pixel2, wavelength, orientation.
         All lengths and wavelength in meters.
+    detector_shape : (fast_dim, slow_dim) tuple, optional
+        Detector pixel dimensions, needed to reverse orientation-specific
+        PONI formulas. Defaults to square inferred from poni.
 
     Returns
     -------
@@ -367,21 +344,32 @@ def poni_to_par(poni):
     o11, o12, o21, o22 = orientation_to_flip(orientation)
     wl_m = float(poni.get("wavelength", 0.0))
 
-    # Recover ID11 tilts from the compensated pyFAI rotation.
-    # tr1,tr2,tr3 = TILT rotation (uncompensated), i.e. the original tilts.
     tr1, tr2, tr3 = _compute_id11_from_pyfai(rot1, rot2, rot3, orientation)
 
     tx = tr3
     ty = tr2
     tz = -tr1
 
-    # Recover along-beam distance and beam center using the COMPENSATED
-    # rotation parameters (rot1,rot2,rot3 are COMPENSATED, matching
-    # what was used to compute PONI in the forward direction).
     delta = L / (cos(rot1) * cos(rot2))
 
-    zc = (poni1 + L * tan(rot2) / cos(rot1)) / pv - 0.5
-    yc = (poni2 - L * tan(rot1)) / ph - 0.5
+    if detector_shape is None:
+        shape_fast = shape_slow = max(int(2 * max(abs(poni1/pv), abs(poni2/ph)) + 2), 2)
+        detector_shape = (shape_fast, shape_slow)
+    else:
+        shape_fast, shape_slow = int(detector_shape[0]), int(detector_shape[1])
+
+    max_d1 = shape_fast - 1.0
+    max_d2 = shape_slow - 1.0
+
+    if orientation in (2, 1):
+        zc = max_d1 + 0.5 - (poni1 + L * tan(rot2) / cos(rot1)) / pv
+    else:
+        zc = (poni1 + L * tan(rot2) / cos(rot1)) / pv - 0.5
+
+    if orientation in (4, 1):
+        yc = max_d2 + 0.5 - (poni2 - L * tan(rot1)) / ph
+    else:
+        yc = (poni2 - L * tan(rot1)) / ph - 0.5
 
     return {
         "distance": delta,
@@ -405,7 +393,7 @@ def poni_to_par(poni):
 
 
 # ---------------------------------------------------------------------------
-# File I/O — .par
+# File I/O -- .par
 # ---------------------------------------------------------------------------
 
 _PAR_GEOMETRY_KEYS = [
@@ -484,7 +472,7 @@ def write_par(par, filepath, par_length_unit="um"):
 
 
 # ---------------------------------------------------------------------------
-# File I/O — .poni
+# File I/O -- .poni
 # ---------------------------------------------------------------------------
 
 def _detector_config_from_poni(poni):
@@ -549,16 +537,16 @@ def write_poni(poni, filepath):
         "poni_version: 2.1",
         "Detector: Detector",
         f"Detector_config: {json.dumps(detector_config)}",
-        f"Distance: {poni['dist']!r}",
-        f"Poni1: {poni['poni1']!r}",
-        f"Poni2: {poni['poni2']!r}",
-        f"Rot1: {poni['rot1']!r}",
-        f"Rot2: {poni['rot2']!r}",
-        f"Rot3: {poni['rot3']!r}",
+        f"Distance: {float(poni['dist']):.12e}",
+        f"Poni1: {float(poni['poni1']):.12e}",
+        f"Poni2: {float(poni['poni2']):.12e}",
+        f"Rot1: {float(poni['rot1']):.12e}",
+        f"Rot2: {float(poni['rot2']):.12e}",
+        f"Rot3: {float(poni['rot3']):.12e}",
     ]
     wl = poni.get("wavelength")
     if wl is not None:
-        lines.append(f"Wavelength: {wl!r}")
+        lines.append(f"Wavelength: {float(wl):.12e}")
     lines.append("")
     with open(filepath, "w") as fh:
         fh.write("\n".join(lines))
