@@ -414,23 +414,51 @@ R_comp[:,1] = S · R_tilt[:,1] · (-o22 / c2)
 and the third column from cross product (ensuring det=+1).
 
 The compensated rotations are exact (columns orthonormal, det=+1), and the
-Euler angles are extracted via `scipy.spatial.transform.Rotation`.  For
-orientations 3 and 1, cos(rot1)·cos(rot2) > 0 (positive distance).  For
-orientations 2 and 4, the compensated rotation has cos(rot1)·cos(rot2) < 0
-in the ZYX Euler convention — all ZYX equivalences preserve this sign, so
-no equivalent parametrization with positive distance exists.  The signed
-distance is self-consistent: the round-trip correctly recovers the positive
-along-beam distance, and pyFAI's `integrate1d` handles it correctly when
-wavelength is set.
+Euler angles are extracted via `scipy.spatial.transform.Rotation`.
+
+For orientations 3 and 1, the raw constraint `S·R·C = R_tilt·Z` yields
+`cos(rot1)·cos(rot2) > 0` and a positive orthogonal distance.
+
+For orientations 2 and 4, the raw constraint yields `R[2,2] < 0` and
+therefore `cos(rot1)·cos(rot2) < 0`.  No equivalent ZYX parametrization
+of the same matrix gives `cos(rot1)·cos(rot2) > 0`.  The solution relaxes
+xyz coordinate matching by introducing per-orientation mirror matrices
+that match which pixel axis each orientation flips:
+
+```
+orient 2 (flip slow / pyFAI axis 1):  M = diag(-1,  1,  1)
+orient 4 (flip fast / pyFAI axis 2):  M = diag( 1, -1,  1)
+orient 1 (flip both):                 M = diag(-1, -1,  1)
+orient 3 (native, no flip):           M = identity
+```
+
+The compensated rotation is found from `S·R_comp·C = M·R_tilt·Z`.
+Each mirror accepts that pyFAI's orientation creates an effective
+reflection of the coordinate axes, keeping distance positive while
+preserving 2θ and azimuth.
+
+**Azimuth relationship**:
+- Orient 3: `chi = 90° − eta`   ( sin=+cos(eta), cos=+sin(eta) )
+- Orient 2: `chi = eta − 90°`   ( sin=−cos(eta), cos=+sin(eta) )
+- Orient 4: `chi = eta + 90°`   ( sin=+cos(eta), cos=−sin(eta) )
+- Orient 1: `chi = 270° − eta`  ( sin=−cos(eta), cos=−sin(eta) )
+
+**Lab coordinates**: In the ID11 frame, the mirror reflects:
+- Orient 2: Z-axis flip  (slow=y_up maps to ID11 Z)
+- Orient 4: Y-axis flip  (fast=x_starboard maps to ID11 −Y)
+- Orient 1: Y and Z flip (both)
+- Orient 3: no flip
 
 The PONI constants must additionally account for orientation-specific pixel
 reordering — the beam center in native coordinates maps to `max - zc + 0.5`
 in the reordered coordinate system for d1-flipped orientations (2 and 1).
 
 **Conclusion**: The conversion between par and poni is exact to machine
-precision for all 4 non-transpose orientations, verified by test tolerances
-of 1e-7 rad for 2θ and azimuth, and 5e-7 m for lab coordinates, on both
-square and non-square detectors with no coordinate flipping.
+precision for all 4 non-transpose orientations. Distances are positive
+in all cases. Verified by test tolerances of 1e-7 rad for 2θ and
+azimuth (per-orientation relationships), and 5e-7 m for lab coordinates
+(after per-orientation mirror reflections), on both square and
+non-square detectors.
 
 ### 5.1 Remaining Limitations
 
@@ -488,13 +516,37 @@ identical to 2.2e-16.
 Added `test_write_poni_loads_and_integrates`: writes par→poni for all 4
 orientations, loads with `pyFAI.load()`, calls `integrate1d`.  All pass.
 
-### 6.4 The Signed Distance
+### 6.4 Mirror-Matrix Approach (Round 3: Positive Distance for All Orientations)
 
-For orientations 2 and 4, `cos(rot1)·cos(rot2) < 0`, producing a signed
-(negative) orthogonal distance.  This is mathematically unavoidable in the
-ZYX Euler convention — the compensated rotation R_comp includes post-rotation
-sign flips (S matrix) to produce correct azimuth and lab coordinates, and
-this forces R_comp[2,2] < 0.  All ZYX equivalences preserve the sign of
-`cos(rot1)·cos(rot2)`.  No equivalent parametrization with positive distance
-exists for the same geometry.  pyFAI's `integrate1d` handles negative dist
-correctly when wavelength is set.
+For orientations 2 and 4, the raw constraint `S·R_comp·C = R_tilt·Z`
+forces `R[2,2] < 0`, giving a negative orthogonal distance (see §5).
+The ZYX Euler convention provides no equivalent parametrization with
+positive `cos(rot1)·cos(rot2)`.
+
+The solution relaxes xyz coordinate matching by introducing a
+per-orientation mirror matrix into the rotation constraint:
+
+```
+S · R_comp · C = M · R_tilt · Z
+```
+
+Each orientation gets the mirror matching its flipped pixel axis:
+
+| Orient | Flips | Mirror M | ID11 frame effect |
+|--------|-------|----------|-------------------|
+| 3 | none | identity | none |
+| 2 | slow/y | diag(−1, 1, 1) | Z-axis flip |
+| 4 | fast/x | diag(1, −1, 1) | Y-axis flip |
+| 1 | both | diag(−1, −1, 1) | Y+Z flip |
+
+This makes the coordinate frame consistent with the detector's fast/slow
+axes. With this relaxation:
+
+- Distance is positive for all 4 orientations
+- 2θ values match exactly (machine precision)
+- Azimuth: chi = 90°−eta (orient 3), = eta−90° (2), = eta+90° (4), = 270°−eta (1)
+- Lab coordinates match after per-orientation mirror reflection in ID11 frame
+- Round-trip is exact to machine precision
+
+Each mirror is self-inverse (`M² = I`); the reverse transform applies
+the same mirror: `R_tilt[:,k] = M · S · R_comp[:,k] · (c_k / z_k)`.

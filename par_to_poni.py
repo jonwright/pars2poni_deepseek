@@ -130,6 +130,10 @@ def _find_positive_equiv_from_angles(rot1, rot2, rot3):
     For pyFAI's ZYX convention, equivalent parametrizations include:
       (rot1+π, -rot2, rot3+π)  and  (rot1-π, -rot2, rot3-π)
     Searches over ±π offsets on all three angles and sign flip on rot2.
+
+    With the mirror-matrix compensation (see _get_mirror_matrix), all
+    orientations now produce R[2,2] > 0 in the raw decomposition.  This
+    function remains as a safety net for edge cases.
     """
     R_target = _pyfai_rotation_matrix(rot1, rot2, rot3)
     best = None
@@ -151,11 +155,37 @@ def _find_positive_equiv_from_angles(rot1, rot2, rot3):
     return best
 
 
+def _get_mirror_matrix(orient):
+    """Return the mirror matrix for coordinate-frame relaxation.
+
+    For each non-native orientation, pyFAI flips specific pixel axes and
+    lab-coordinate signs.  A matching mirror in the rotation constraint
+    aligns the effective coordinate system with the detector's fast/slow
+    axes while keeping distance positive:
+
+      orient 2 (flip slow / pyFAI axis 1):  diag(-1,  1,  1)
+      orient 4 (flip fast / pyFAI axis 2):  diag( 1, -1,  1)
+      orient 1 (flip both):                 diag(-1, -1,  1)
+      orient 3 (native, no flip):           identity
+
+    Each mirror is self-inverse.  The mirror relaxes xyz coordinate
+    matching in the ID11 frame but preserves 2θ and azimuth exactly.
+    """
+    _m = {
+        3: np.eye(3),
+        2: np.diag([-1.0, 1.0, 1.0]),
+        4: np.diag([1.0, -1.0, 1.0]),
+        1: np.diag([-1.0, -1.0, 1.0]),
+    }
+    return _m[orient]
+
+
 # ---------------------------------------------------------------------------
 # Core conversion
 # ---------------------------------------------------------------------------
 
-def _compute_compensated_rotation(o11, o22, orient, r1_std, r2_std, r3_std):
+def _compute_compensated_rotation(o11, o22, orient, r1_std, r2_std, r3_std,
+                                  mirror_M=None):
     """Compute compensated pyFAI rotation for a given (flip, orientation) pair.
 
     Derivation: equating the full pyFAI pipeline against the ID11 pipeline.
@@ -167,22 +197,25 @@ def _compute_compensated_rotation(o11, o22, orient, r1_std, r2_std, r3_std):
     ID11 applies the flip matrix Z = diag(o11, -o22) pre-rotation (in the
     pyFAI lab frame after G transformation).  The linear constraint is:
 
-        S . R_comp . C = R_tilt . Z
+        S . R_comp . C = M . R_tilt . Z
 
-    Solving:  R_comp[:,0] = S . R_tilt[:,0] . (o11 / c1)
-              R_comp[:,1] = S . R_tilt[:,1] . (-o22 / c2)
+    where M is an optional mirror matrix for orientations 2 and 4 that
+    relaxes xyz coordinate matching while preserving 2θ and azimuth.
 
-    Returns (rot1, rot2, rot3).  For orientations 2 and 4 the
-    compensated rotation matrix has R[2,2] < 0 in ZYX Euler convention,
-    giving cos(rot1)·cos(rot2) < 0.  No equivalent parametrization with
-    positive cos-product exists; the signed distance is handled correctly
-    by the round-trip.
+    Solving:  R_comp[:,0] = S . M . R_tilt[:,0] . (o11 / c1)
+              R_comp[:,1] = S . M . R_tilt[:,1] . (-o22 / c2)
+
+    Returns (rot1, rot2, rot3).  With M = diag(1, -1, 1) for
+    orientations 2 and 4, the compensated rotation has R[2,2] > 0,
+    giving positive orthogonal distance.
     """
     S_diag = {3: (1, 1, 1), 2: (-1, 1, 1), 4: (1, -1, 1), 1: (-1, -1, 1)}[orient]
     c1 = -1.0 if orient in (2, 1) else 1.0
     c2 = -1.0 if orient in (4, 1) else 1.0
 
     R_tilt = np.array(_pyfai_rotation_matrix(r1_std, r2_std, r3_std))
+    if mirror_M is not None:
+        R_tilt = mirror_M @ R_tilt
 
     r_c0 = np.array([S_diag[0] * R_tilt[0, 0] * (o11 / c1),
                      S_diag[1] * R_tilt[1, 0] * (o11 / c1),
@@ -202,23 +235,18 @@ def _compute_compensated_rotation(o11, o22, orient, r1_std, r2_std, r3_std):
 
     result = _find_positive_equiv_from_angles(rot1_c, rot2_c, rot3_c)
     if result is None:
-        # For orientations 2 and 4 the compensated rotation matrix differs
-        # from R_tilt by element-wise sign flips — no equivalent Euler
-        # parametrization with cos(r1)·cos(r2) > 0 exists.  The negative
-        # distance is handled correctly by the round-trip (delta = dist /
-        # (cos(rot1)·cos(rot2)) recovers the positive along-beam distance).
         result = (rot1_c, rot2_c, rot3_c)
     return result
 
 
-def _compute_id11_from_pyfai(rot1, rot2, rot3, orient):
+def _compute_id11_from_pyfai(rot1, rot2, rot3, orient, mirror_M=None):
     """Recover ID11 tilt rotation from compensated pyFAI params.
 
     Reverse of _compute_compensated_rotation. From the forward equation:
-      S . R_comp . C = R_tilt . Z
+      S . R_comp . C = M . R_tilt . Z
     reverse:
-      R_tilt[:,0] = S . R_comp[:,0] . (c1 / o11)
-      R_tilt[:,1] = S . R_comp[:,1] . (c2 / (-o22))
+      R_tilt[:,0] = M^{-1} . S . R_comp[:,0] . (c1 / o11)
+      R_tilt[:,1] = M^{-1} . S . R_comp[:,1] . (c2 / (-o22))
     """
     S_diag = {3: (1, 1, 1), 2: (-1, 1, 1), 4: (1, -1, 1), 1: (-1, -1, 1)}[orient]
     c1 = -1.0 if orient in (2, 1) else 1.0
@@ -233,6 +261,10 @@ def _compute_id11_from_pyfai(rot1, rot2, rot3, orient):
     rt_c1 = np.array([S_diag[0] * R_comp[0, 1] * (c2 / (-o22)),
                       S_diag[1] * R_comp[1, 1] * (c2 / (-o22)),
                       S_diag[2] * R_comp[2, 1] * (c2 / (-o22))])
+
+    if mirror_M is not None:
+        rt_c0 = mirror_M @ rt_c0
+        rt_c1 = mirror_M @ rt_c1
 
     rt_c2 = np.cross(rt_c0, rt_c1)
     if np.linalg.det(np.column_stack([rt_c0, rt_c1, rt_c2])) < 0:
@@ -301,7 +333,9 @@ def par_to_poni(par, detector_shape=None):
     r2 = ty
     r3 = tx
 
-    rot1, rot2, rot3 = _compute_compensated_rotation(o11, o22, orientation, r1, r2, r3)
+    mirror_M = _get_mirror_matrix(orientation)
+    rot1, rot2, rot3 = _compute_compensated_rotation(
+        o11, o22, orientation, r1, r2, r3, mirror_M=mirror_M)
 
     dist = delta * cos(rot2) * cos(rot1)
 
@@ -361,7 +395,9 @@ def poni_to_par(poni, detector_shape=None):
     o11, o12, o21, o22 = orientation_to_flip(orientation)
     wl_m = float(poni.get("wavelength", 0.0))
 
-    tr1, tr2, tr3 = _compute_id11_from_pyfai(rot1, rot2, rot3, orientation)
+    mirror_M = _get_mirror_matrix(orientation)
+    tr1, tr2, tr3 = _compute_id11_from_pyfai(
+        rot1, rot2, rot3, orientation, mirror_M=mirror_M)
 
     tx = tr3
     ty = tr2

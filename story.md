@@ -410,3 +410,89 @@ S-matrix equation (erroneous attempt), full documentation consistency audit
 across all 5 files: **$0.39**
 
 Total round 2: $0.51
+
+---
+
+## Round 3: Per-Orientation Mirror Matrix (Positive Distance)
+
+### Prompt
+
+We are stuck on distance being negative in some cases. When pyFAI flips an
+image left-right, consider it has flipped the universe around the image. The
+key result required: same tth from both programs, and a simple mapping for
+the azimuth (eta/chi). It doesn't matter whether the x/y/z match exactly.
+Allowing mirror images on the coordinate matchup for pyFAI orients 2 and 4,
+find matching positive-distance rotations.
+
+### Why the raw constraint gives negative distance
+
+The equation `S·R_comp·C = R_tilt·Z` forces `R[2,2] < 0` for orients 2 and 4.
+In ZYX Euler convention `R[2,2] = cos(rot1)·cos(rot2)`, so the distance
+`L = Δ·cos(rot1)·cos(rot2)` comes out negative. All ZYX equivalences of the
+same matrix preserve this sign — no equivalent parametrization with positive
+distance exists for the same rotation matrix.
+
+### Solution: per-orientation mirror matrices
+
+Relax the constraint to allow a mirror:
+
+```
+S · R_comp · C = M · R_tilt · Z
+```
+
+Assign each orientation the mirror matching its flipped pixel axis:
+
+| Orient | Flips | Mirror M | ID11 frame |
+|--------|-------|----------|------------|
+| 3 | none | `I` | none |
+| 2 | slow/y | `diag(−1, 1, 1)` | Z flip |
+| 4 | fast/x | `diag(1, −1, 1)` | Y flip |
+| 1 | both | `diag(−1, −1, 1)` | Y+Z flip |
+
+Orient 2 flips the slow pixel axis (pyFAI axis 1 = y_up), so M flips axis 1.
+Orient 4 flips the fast pixel axis (pyFAI axis 2 = x_starboard), so M flips axis 2.
+Orient 1 flips both. This makes the coordinate frame consistently detector-based
+(fast/slow axes) as in ImageD11.
+
+### How chi moves with orientation
+
+This is not a hack — it's pyFAI's actual behavior. PyFAI's chi is computed from
+lab coordinates `(t1,t2)` which orientation directly affects via both pixel
+reordering (C) and sign flips (S). The pyFAI docs (geometry.rst:77-78) state:
+"Due to constraints on the origin and orientation of the azimuthal angle, chi,
+(1,2,3) is indirect orientation." The chi origin is at the lower-left of the
+image. When orientation flips the image, chi follows.
+
+The per-orientation azimuth relationships are:
+
+| Orient | chi = | sin(chi) | cos(chi) |
+|--------|-------|----------|----------|
+| 3 | 90° − eta | +cos(eta) | +sin(eta) |
+| 2 | eta − 90° | −cos(eta) | +sin(eta) |
+| 4 | eta + 90° | +cos(eta) | −sin(eta) |
+| 1 | 270° − eta | −cos(eta) | −sin(eta) |
+
+### Changes
+
+**par_to_poni.py**: `_get_mirror_matrix(orient)` returns the per-orientation
+mirror. `_compute_compensated_rotation` and `_compute_id11_from_pyfai` accept
+and apply the mirror in both forward and reverse directions.
+
+**test_conversion.py**: Azimuth test updated with per-orientation sin/cos
+expectations. Lab coordinate test applies per-orientation mirror reflections
+in the ID11 frame (orient 2: Z-flip, orient 4: Y-flip, orient 1: Y+Z-flip).
+
+### Result
+
+- All 4 orientations: distance positive (+0.145)
+- tth matches at 10⁻¹⁶ rad
+- Azimuth has simple per-orientation relationships
+- Round-trip par↔poni exact
+- 22 tests, 70 subtests, all pass
+
+### Cost
+
+Round 3: mirror-matrix approach, per-orientation assignment, test updates,
+documentation consistency: **$0.18**
+
+Total: $1.75 ($1.57 prior + $0.18 round 3)

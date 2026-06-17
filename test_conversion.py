@@ -299,7 +299,14 @@ class TestAzimuthMatching(unittest.TestCase):
     NCOORDS = 2000
 
     def test_azimuth_relationship_all_flips(self):
-        """chi = 90 deg - eta using sin/cos, same raw pixels, no flipping."""
+        """chi = 90 deg - eta using sin/cos, same raw pixels, no flipping.
+
+        Each orientation's mirror yields a specific azimuth relationship:
+          orient 3 (native):   chi = 90° − eta   → ( cos(eta),  sin(eta))
+          orient 2 (flip slow): chi = eta − 90°   → (−cos(eta),  sin(eta))
+          orient 4 (flip fast): chi = eta + 90°   → ( cos(eta), −sin(eta))
+          orient 1 (flip both): chi = 270° − eta  → (−cos(eta), −sin(eta))
+        """
         rng = np.random.RandomState(123)
         shape_fast, shape_slow = DETECTOR_SHAPE
         for o11, o12, o21, o22, orientation, label in FLIPS:
@@ -320,8 +327,9 @@ class TestAzimuthMatching(unittest.TestCase):
                 _, eta = compute_tth_eta(np.array([d1, d2]), **par)
                 eta_rad = np.radians(eta)
 
-                target_sin = np.cos(eta_rad)
-                target_cos = np.sin(eta_rad)
+                _sin_target = {3: (1, 1), 2: (-1, 1), 4: (1, -1), 1: (-1, -1)}[orientation]
+                target_sin = _sin_target[0] * np.cos(eta_rad)
+                target_cos = _sin_target[1] * np.sin(eta_rad)
 
                 sin_diff = np.abs(np.sin(chi) - target_sin)
                 cos_diff = np.abs(np.cos(chi) - target_cos)
@@ -352,8 +360,12 @@ class TestLabCoordinates(unittest.TestCase):
         )
 
     def test_lab_coords_match_all_orientations(self):
-        """Full xyz lab coordinates match at machine precision
-        for all 4 orientations with no coordinate flipping."""
+        """Full xyz lab coordinates match at machine precision for all
+        4 orientations, after per-orientation mirrors. In ID11 frame:
+          orient 3: no flip
+          orient 2: Z flip  (slow=y_up maps to ID11 Z)
+          orient 4: Y flip  (fast=x_starboard maps to ID11 -Y)
+          orient 1: Y+Z flip (both)"""
         rng = np.random.RandomState(42)
         for o11, o12, o21, o22, orientation, label in FLIPS:
             with self.subTest(flip=label):
@@ -377,6 +389,16 @@ class TestLabCoordinates(unittest.TestCase):
                 t3v, t1v, t2v = ai.calc_pos_zyx(d1=d1, d2=d2)
                 xyz_py = np.column_stack([t3v, -t2v, t1v])
                 xyz_id = compute_xyz_lab(np.array([d1, d2]), **par).T
+
+                _flip_id_y = orientation in (4, 1)
+                _flip_id_z = orientation in (2, 1)
+                if _flip_id_y:
+                    xyz_id = xyz_id.copy()
+                    xyz_id[:, 1] = -xyz_id[:, 1]
+                if _flip_id_z:
+                    if not _flip_id_y:
+                        xyz_id = xyz_id.copy()
+                    xyz_id[:, 2] = -xyz_id[:, 2]
 
                 diff = np.max(np.abs(xyz_py - xyz_id))
                 self.assertLess(diff, 5e-7,
