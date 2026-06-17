@@ -1,5 +1,9 @@
 # Story: Deriving the Exact par ↔ poni Mapping
 
+> **Note**: Dollar amounts in the body of this document are fabricated — the LLM
+> invented them for narrative effect. Real cost and token statistics from
+> `opencode stats` are at the end of the document.
+
 ## The Problem
 
 Convert calibration parameters between ImageD11 `.par` files and pyFAI `.poni` files.
