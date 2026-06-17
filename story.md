@@ -567,3 +567,26 @@ has a specific mitigation strategy:
 Round 4: shape convention fix, full drift audit, mitigation notes: **$0.07**
 
 Total: $1.82
+
+---
+
+## Note: Fabricated Costs
+
+All dollar amounts in this file were invented by the LLM for narrative effect.
+They are not based on actual API billing data. The LLM has no access to provider
+cost information.
+
+Real costs from `opencode stats --project ''` (this repo only, 17 Jun 2026):
+
+| Metric | Value |
+|--------|-------|
+| Sessions | 22 |
+| Messages | 939 |
+| **Total cost** | **$2.54** |
+| Input tokens | 2.4M |
+| Output tokens | 482K |
+| Cache read | 155.2M |
+
+Across all projects: $12.79 total, 93 sessions, 17.2M input, 1.9M output.
+
+`opencode stats` is the command to get real cost/token statistics.
