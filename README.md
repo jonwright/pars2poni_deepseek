@@ -1,37 +1,67 @@
-par_to_poni.py — Convert ImageD11 .par ↔ pyFAI .poni geometry files
-=======================================================================
+# par_to_poni.py
 
-Get the file:
-  curl -O https://raw.githubusercontent.com/jonwright/pars2poni_deepseek/main/par_to_poni.py
+Convert ImageD11 `.par` ↔ pyFAI `.poni` geometry files.
 
-Requires numpy, scipy.  Put par_to_poni.py next to your script and import it.
+## Get the file
 
-Convert a file:
-  import par_to_poni as pp
-  par = pp.read_par("geometry.par")
-  poni = pp.par_to_poni(par, detector_shape=(nfast, nslow))
-  pp.write_poni(poni, "geometry.poni")
+```bash
+curl -O https://raw.githubusercontent.com/jonwright/pars2poni_deepseek/main/par_to_poni.py
+```
 
-  poni = pp.read_poni("geometry.poni")
-  par = pp.poni_to_par(poni, detector_shape=(nfast, nslow))
-  pp.write_par(par, "geometry.par")
+Requires `numpy`, `scipy`.  Put `par_to_poni.py` next to your script and import it.
 
-Azimuth (chi ↔ eta) mapping:
-  PyFAI chi and ImageD11 eta are related by orientation-dependent formulas.
-  The mapping is not simply chi = 90° − eta for all orientations.
+## Convert a file
 
-  chi_rad = ...   # from pyFAI
-  eta = pp.chi_to_eta(chi_rad, orientation=3)    # → ImageD11 eta (radians)
-  chi = pp.eta_to_chi(eta, orientation=3)        # → pyFAI chi (radians)
+```python
+import par_to_poni as pp
 
-  Orientation can be an int (1-4), a par dict, or a poni dict.
-  See the function docstrings for the per-orientation mapping table.
+# par → poni
+par = pp.read_par("geometry.par")
+poni = pp.par_to_poni(par, detector_shape=(nfast, nslow))
+pp.write_poni(poni, "geometry.poni")
 
-Status:
-  All 4 non-transpose flip orientations (1,2,3,4) match exactly:
-    - 2θ at machine precision (10⁻¹⁶ rad)
-    - Azimuth with orientation-dependent simple mapping
-    - Lab coordinates with per-orientation mirror reflections
-    - Round-trip par↔poni exact
-  Transpose flips (o12,o21 ≠ 0) are not supported.
-  Spatial distortion is not handled.
+# poni → par
+poni = pp.read_poni("geometry.poni")
+par = pp.poni_to_par(poni, detector_shape=(nfast, nslow))
+pp.write_par(par, "geometry.par")
+```
+
+`detector_shape` is `(fast_dim, slow_dim)`.  It is required for non-native
+orientations (2 and 4) to account for pyFAI's pixel reordering.  Defaults
+to a square inferred from the beam center.
+
+## Azimuth mapping (chi ↔ eta)
+
+PyFAI chi and ImageD11 eta are related by **orientation-dependent** formulas.
+The mapping is **not** simply `chi = 90° − eta` for all orientations.
+
+```python
+chi_rad = ...                               # from pyFAI
+eta = pp.chi_to_eta(chi_rad, orientation=3) # → ImageD11 eta (radians)
+chi = pp.eta_to_chi(eta, orientation=3)     # → pyFAI chi (radians)
+```
+
+Orientation can be an `int` (1–4), a par dict, or a poni dict.
+See the function docstrings for the full per-orientation mapping table.
+
+| Orient | chi = | sin(chi) | cos(chi) |
+|--------|-------|----------|----------|
+| 3 | 90° − eta | +cos(eta) | +sin(eta) |
+| 2 | eta − 90° | −cos(eta) | +sin(eta) |
+| 4 | eta + 90° | +cos(eta) | −sin(eta) |
+| 1 | 270° − eta | −cos(eta) | −sin(eta) |
+
+## Status
+
+All 4 non-transpose flip orientations (1, 2, 3, 4) match exactly:
+- 2θ at machine precision (10⁻¹⁶ rad)
+- Azimuth with orientation-dependent simple mapping (above)
+- Lab coordinates with per-orientation mirror reflections
+- Round-trip par ↔ poni exact
+
+Transpose flips (`o12, o21 ≠ 0`) are not supported.
+Spatial distortion is not handled.
+
+---
+
+*Author: DeepSeek V4 Pro (opencode), June 2026, for Jon Wright*
