@@ -605,6 +605,48 @@ class TestEdgeCases(unittest.TestCase):
                     par2 = pp.poni_to_par(poni, detector_shape=DETECTOR_SHAPE)
                     self.assertAlmostEqual(angle, par2[tilt_key], delta=1e-8)
 
+    def test_chi_eta_conversion(self):
+        """chi_to_eta and eta_to_chi are inverses, per-orientation mapping correct."""
+        test_angles = [-3.0, -2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 3.0]
+
+        for orient in (1, 2, 3, 4):
+            with self.subTest(orientation=orient):
+                for ang in test_angles:
+                    eta = pp.chi_to_eta(ang, orient)
+                    chi = pp.eta_to_chi(ang, orient)
+                    # Round-trip: should recover original value modulo 2π
+                    rtt = pp.eta_to_chi(eta, orient)
+                    self.assertAlmostEqual(
+                        math.sin(rtt), math.sin(ang), delta=1e-14,
+                        msg=f"orient={orient} round-trip sin mismatch at {ang}")
+                    self.assertAlmostEqual(
+                        math.cos(rtt), math.cos(ang), delta=1e-14,
+                        msg=f"orient={orient} round-trip cos mismatch at {ang}")
+
+        # Per-orientation sin/cos relationships from _CHI_ETA_SIN_COS_FACTORS
+        s0, s1 = pp._CHI_ETA_SIN_COS_FACTORS[3]
+        self.assertEqual((s0, s1), (1, 1))
+        s0, s1 = pp._CHI_ETA_SIN_COS_FACTORS[2]
+        self.assertEqual((s0, s1), (-1, 1))
+        s0, s1 = pp._CHI_ETA_SIN_COS_FACTORS[4]
+        self.assertEqual((s0, s1), (1, -1))
+        s0, s1 = pp._CHI_ETA_SIN_COS_FACTORS[1]
+        self.assertEqual((s0, s1), (-1, -1))
+
+        # Orientation from par / poni dicts
+        par = make_base_par()
+        self.assertEqual(pp._extract_orientation_from_arg(par), 3)
+        par["o11"] = -1; par["o22"] = -1
+        self.assertEqual(pp._extract_orientation_from_arg(par), 4)
+        poni = pp.par_to_poni(par, detector_shape=DETECTOR_SHAPE)
+        self.assertEqual(pp._extract_orientation_from_arg(poni), 4)
+
+        # chi_to_eta with dict arg
+        for ang in [0.0, 1.0, -0.5]:
+            eta_p = pp.chi_to_eta(ang, par)
+            eta_i = pp.chi_to_eta(ang, 4)
+            self.assertAlmostEqual(math.sin(eta_p), math.sin(eta_i), delta=1e-14)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

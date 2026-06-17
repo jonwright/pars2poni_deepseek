@@ -7,8 +7,12 @@ Based on the pyFAI source code analysis of orientation handling:
 
 Equating the full affine transforms gives exact closed-form solutions
 for all 4 non-transpose flip->orientation pairs, including the pixel
-reordering (C matrix) and post-rotation sign flips (S matrix).
+reordering (C matrix), post-rotation sign flips (S matrix), and
+per-orientation mirror matrices (M) that keep distance positive.
 Transpose flips (o12,o21!=0) are not supported.
+
+Azimuth mapping — the pyFAI chi and ImageD11 eta angles are related by
+orientation-dependent formulas; see chi_to_eta() and eta_to_chi().
 
 Dependencies: numpy, scipy (for Rotation). All internal units are meters for
 lengths and meters for wavelength.
@@ -23,6 +27,15 @@ Usage:
     poni = pp.read_poni("geometry.poni")
     par = pp.poni_to_par(poni, detector_shape=(200, 128))
     pp.write_par(par, "geometry.par")
+
+    # Convert azimuth angles between the two programs:
+    chi_rad = 1.2                     # from pyFAI
+    eta_rad = pp.chi_to_eta(chi_rad, orientation=3)
+    chi_rad = pp.eta_to_chi(eta_rad, orientation=3)
+
+    # Orientation can come from a par or poni dict:
+    eta_rad = pp.chi_to_eta(chi_rad, par)
+    chi_rad = pp.eta_to_chi(eta_rad, poni)
 """
 
 import json
@@ -74,6 +87,146 @@ def flip_to_orientation(o11, o12, o21, o22):
 
 def orientation_to_flip(orientation):
     return _ORIENTATION_TO_FLIP[orientation]
+
+
+# ---------------------------------------------------------------------------
+# Azimuth angle conversion (chi ↔ eta)
+# ---------------------------------------------------------------------------
+
+# Per-orientation mapping: sin(chi)/cos(chi) expressed as (s0·cos(eta), s1·sin(eta))
+# Derived from equating the pyFAI coordinate frame (with per-orientation mirror)
+# against the ImageD11 coordinate frame.  Verified by test_conversion.py.
+_CHI_ETA_SIN_COS_FACTORS = {
+    3: (+1, +1),   # chi =  90° − eta    sin(chi) = +cos(eta)  cos(chi) = +sin(eta)
+    2: (-1, +1),   # chi =  eta − 90°    sin(chi) = −cos(eta)  cos(chi) = +sin(eta)
+    4: (+1, -1),   # chi =  eta + 90°    sin(chi) = +cos(eta)  cos(chi) = −sin(eta)
+    1: (-1, -1),   # chi = 270° − eta    sin(chi) = −cos(eta)  cos(chi) = −sin(eta)
+}
+
+
+def chi_to_eta(chi_rad, orientation):
+    """Convert pyFAI azimuthal angle chi → ImageD11 azimuthal angle eta.
+
+    Parameters
+    ----------
+    chi_rad : float or array-like
+        Azimuthal angle from pyFAI (radians).  Defined as
+        ``atan2(t1, t2)`` in pyFAI lab coordinates; origin at +x
+        (starboard), positive CCW toward +y (up).
+    orientation : int, dict
+        pyFAI orientation (1–4), or a par dict (with o11..o22 keys),
+        or a poni dict (with an 'orientation' key).
+
+    Returns
+    -------
+    float or ndarray
+        ImageD11 eta angle (radians).  Defined as ``atan2(−t_y, t_z)``
+        in ID11 lab coordinates; origin at +z (up), positive CW
+        facing downstream.
+
+    Notes
+    -----
+    The mapping depends on orientation because pyFAI's pixel reordering
+    and sign flips change the effective azimuth origin.  All results are
+    equivalent modulo 2π — use sin/cos comparisons to avoid
+    wrap-around ambiguity.
+
+    ┌─────────┬──────────────────────┬─────────────────────────┐
+    │ orient  │ chi = f(eta)         │ sin(chi), cos(chi)      │
+    ├─────────┼──────────────────────┼─────────────────────────┤
+    │ 3       │ chi =  90° − eta     │ (+cos(eta), +sin(eta))  │
+    │ 2       │ chi =  eta − 90°     │ (−cos(eta), +sin(eta))  │
+    │ 4       │ chi =  eta + 90°     │ (+cos(eta), −sin(eta))  │
+    │ 1       │ chi = 270° − eta     │ (−cos(eta), −sin(eta))  │
+    └─────────┴──────────────────────┴─────────────────────────┘
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> eta = chi_to_eta(np.radians(45), orientation=3)
+    >>> np.degrees(eta)
+    45.0
+    >>> eta = chi_to_eta(np.radians(120), orientation=2)
+    >>> np.degrees(eta) % 360
+    30.0
+    """
+    import numpy as np
+    orientation = _extract_orientation_from_arg(orientation)
+    s0, s1 = _CHI_ETA_SIN_COS_FACTORS[orientation]
+    return np.arctan2(s1 * np.cos(chi_rad), s0 * np.sin(chi_rad))
+
+
+def eta_to_chi(eta_rad, orientation):
+    """Convert ImageD11 azimuthal angle eta → pyFAI azimuthal angle chi.
+
+    Parameters
+    ----------
+    eta_rad : float or array-like
+        Azimuthal angle from ImageD11 (radians).  Defined as
+        ``atan2(−t_y, t_z)`` in ID11 lab coordinates; origin at +z
+        (up), positive CW facing downstream.
+    orientation : int, dict
+        pyFAI orientation (1–4), or a par dict (with o11..o22 keys),
+        or a poni dict (with an 'orientation' key).
+
+    Returns
+    -------
+    float or ndarray
+        pyFAI chi angle (radians).  Defined as ``atan2(t1, t2)`` in
+        pyFAI lab coordinates; origin at +x (starboard), positive
+        CCW toward +y (up).
+
+    Notes
+    -----
+    See `chi_to_eta` for the per-orientation mapping table.
+    Inverse of `chi_to_eta`: ``eta_to_chi(chi_to_eta(c, o), o)``
+    recovers the original chi (modulo 2π).
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> chi = eta_to_chi(np.radians(45), orientation=3)
+    >>> np.degrees(chi)
+    45.0
+    >>> chi = eta_to_chi(np.radians(30), orientation=4)
+    >>> np.degrees(chi) % 360
+    120.0
+    """
+    import numpy as np
+    orientation = _extract_orientation_from_arg(orientation)
+    s0, s1 = _CHI_ETA_SIN_COS_FACTORS[orientation]
+    return np.arctan2(s0 * np.cos(eta_rad), s1 * np.sin(eta_rad))
+
+
+def _extract_orientation_from_arg(arg):
+    """Extract pyFAI orientation (1–4) from a par dict, poni dict, or int.
+
+    Parameters
+    ----------
+    arg : dict or int
+        If dict: must contain either 'orientation' key (poni) or
+        'o11','o12','o21','o22' keys (par).
+        If int: returned directly.
+
+    Returns
+    -------
+    int
+        pyFAI orientation (1, 2, 3, or 4).
+    """
+    if isinstance(arg, dict):
+        if "orientation" in arg:
+            return int(arg["orientation"])
+        elif "o11" in arg and "o22" in arg:
+            o11 = int(arg.get("o11", 1))
+            o12 = int(arg.get("o12", 0))
+            o21 = int(arg.get("o21", 0))
+            o22 = int(arg.get("o22", -1))
+            return flip_to_orientation(o11, o12, o21, o22)
+        else:
+            raise ValueError(
+                "Dict must contain 'orientation' (poni) or "
+                "'o11','o12','o21','o22' (par)")
+    return int(arg)
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +323,7 @@ def _get_mirror_matrix(orient):
 
     Each mirror is self-inverse.  The mirror relaxes xyz coordinate
     matching in the ID11 frame but preserves 2θ and azimuth exactly.
+    See chi_to_eta / eta_to_chi for the per-orientation azimuth mapping.
     """
     _m = {
         3: np.eye(3),
@@ -199,15 +353,14 @@ def _compute_compensated_rotation(o11, o22, orient, r1_std, r2_std, r3_std,
 
         S . R_comp . C = M . R_tilt . Z
 
-    where M is an optional mirror matrix for orientations 2 and 4 that
-    relaxes xyz coordinate matching while preserving 2θ and azimuth.
+    where M is the per-orientation mirror matrix (see _get_mirror_matrix)
+    that relaxes xyz coordinate matching while preserving 2θ and azimuth.
 
     Solving:  R_comp[:,0] = S . M . R_tilt[:,0] . (o11 / c1)
               R_comp[:,1] = S . M . R_tilt[:,1] . (-o22 / c2)
 
-    Returns (rot1, rot2, rot3).  With M = diag(1, -1, 1) for
-    orientations 2 and 4, the compensated rotation has R[2,2] > 0,
-    giving positive orthogonal distance.
+    Returns (rot1, rot2, rot3).  The mirror M ensures R[2,2] > 0
+    for all orientations, giving positive orthogonal distance.
     """
     S_diag = {3: (1, 1, 1), 2: (-1, 1, 1), 4: (1, -1, 1), 1: (-1, -1, 1)}[orient]
     c1 = -1.0 if orient in (2, 1) else 1.0
