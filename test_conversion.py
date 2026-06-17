@@ -56,7 +56,7 @@ def make_base_par():
     )
 
 
-DETECTOR_SHAPE = (1000, 1000)  # (fast, slow) -- standard test detector
+DETECTOR_SHAPE = (1000, 1000)  # (slow, fast) -- pyFAI C-order convention
 
 # All 4 non-transpose flip orientations
 FLIPS = [
@@ -218,7 +218,7 @@ class TestTwothetaMatching(unittest.TestCase):
         """2th values match to machine precision for all 4 orientations,
         same raw pixel indices, no coordinate flipping."""
         rng = np.random.RandomState(42)
-        shape_fast, shape_slow = DETECTOR_SHAPE
+        shape_slow, shape_fast = DETECTOR_SHAPE
         for o11, o12, o21, o22, orientation, label in FLIPS:
             with self.subTest(flip=label):
                 par = make_base_par()
@@ -255,7 +255,7 @@ class TestTwothetaMatching(unittest.TestCase):
         par["tilt_x"] = par["tilt_y"] = par["tilt_z"] = 0.0
 
         rng = np.random.RandomState(42)
-        shape_fast, shape_slow = DETECTOR_SHAPE
+        shape_slow, shape_fast = DETECTOR_SHAPE
         for o11, o12, o21, o22, orientation, label in FLIPS:
             with self.subTest(flip=label):
                 par["o11"] = o11
@@ -308,7 +308,7 @@ class TestAzimuthMatching(unittest.TestCase):
           orient 1 (flip both): chi = 270° − eta  → (−cos(eta), −sin(eta))
         """
         rng = np.random.RandomState(123)
-        shape_fast, shape_slow = DETECTOR_SHAPE
+        shape_slow, shape_fast = DETECTOR_SHAPE
         for o11, o12, o21, o22, orientation, label in FLIPS:
             with self.subTest(flip=label):
                 par = make_base_par()
@@ -345,14 +345,14 @@ class TestLabCoordinates(unittest.TestCase):
     same raw pixel indices, no coordinate flipping."""
 
     NCOORDS = 2000
-    SHAPE = (200, 128)
+    SHAPE = (128, 200)  # (slow, fast) — pyFAI C-order
     G = np.array([[0, 0, 1], [0, -1, 0], [1, 0, 0]], dtype=float)
 
     def _make_test_par(self, **kw):
         return dict(
             distance=0.15,
-            y_center=(self.SHAPE[0] - 1) / 2.0,
-            z_center=(self.SHAPE[1] - 1) / 2.0,
+            y_center=(self.SHAPE[1] - 1) / 2.0,
+            z_center=(self.SHAPE[0] - 1) / 2.0,
             y_size=75e-6, z_size=75e-6,
             tilt_x=0.3, tilt_y=0.2, tilt_z=-0.15,
             wavelength=1.5406e-10,
@@ -374,17 +374,15 @@ class TestLabCoordinates(unittest.TestCase):
                 poni = pp.par_to_poni(par, detector_shape=self.SHAPE)
                 self.assertEqual(poni["orientation"], orientation)
 
-                d1 = rng.uniform(0, self.SHAPE[1] - 1, self.NCOORDS)
-                d2 = rng.uniform(0, self.SHAPE[0] - 1, self.NCOORDS)
+                d1 = rng.uniform(0, self.SHAPE[0] - 1, self.NCOORDS)
+                d2 = rng.uniform(0, self.SHAPE[1] - 1, self.NCOORDS)
 
                 ai = AzimuthalIntegrator(
                     dist=poni["dist"], poni1=poni["poni1"], poni2=poni["poni2"],
                     rot1=poni["rot1"], rot2=poni["rot2"], rot3=poni["rot3"],
                     pixel1=poni["pixel1"], pixel2=poni["pixel2"],
                     wavelength=poni["wavelength"], orientation=orientation)
-                # pyFAI uses C-order shape convention: shape[0]=slow, shape[1]=fast.
-                # Our SHAPE is (fast_dim, slow_dim), so pass (slow, fast) to pyFAI.
-                ai.detector.shape = (self.SHAPE[1], self.SHAPE[0])
+                ai.detector.shape = self.SHAPE
 
                 t3v, t1v, t2v = ai.calc_pos_zyx(d1=d1, d2=d2)
                 xyz_py = np.column_stack([t3v, -t2v, t1v])
@@ -515,7 +513,7 @@ class TestIO(unittest.TestCase):
 
                 ai = pyFAI.load(poni_file)
                 ai.detector.shape = DETECTOR_SHAPE
-                shape_fast, shape_slow = DETECTOR_SHAPE
+                shape_slow, shape_fast = DETECTOR_SHAPE
                 img = np.ones((shape_slow, shape_fast), dtype=np.float64)
                 result = ai.integrate1d(img, 20)
                 self.assertGreater(len(result.radial), 0,

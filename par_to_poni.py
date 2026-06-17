@@ -21,11 +21,11 @@ Usage:
     import par_to_poni as pp
 
     par = pp.read_par("geometry.par")
-    poni = pp.par_to_poni(par, detector_shape=(200, 128))
+    poni = pp.par_to_poni(par, detector_shape=(2162, 2068))
     pp.write_poni(poni, "geometry.poni")
 
     poni = pp.read_poni("geometry.poni")
-    par = pp.poni_to_par(poni, detector_shape=(200, 128))
+    par = pp.poni_to_par(poni, detector_shape=(2162, 2068))
     pp.write_par(par, "geometry.par")
 
     # Convert azimuth angles between the two programs:
@@ -440,11 +440,11 @@ def par_to_poni(par, detector_shape=None):
         Keys: distance, y_center, z_center, y_size, z_size,
         tilt_x, tilt_y, tilt_z, o11, o12, o21, o22, wavelength.
         All lengths in meters internally, wavelength in meters.
-    detector_shape : (fast_dim, slow_dim) tuple, optional
-        Detector pixel dimensions. Required for non-native orientations
-        (2 and 4) to compute correct PONI accounting for pyFAI's
-        pixel-reordering convention. For orientation 3 (native) the
-        shape is not needed. Defaults to square inferred from beam center.
+    detector_shape : (slow_dim, fast_dim) tuple, optional
+        Detector pixel dimensions matching pyFAI's C-order shape
+        convention: shape[0] = slow (height/rows), shape[1] = fast
+        (width/columns).  Required for non-native orientations
+        (2 and 4).  Defaults to square inferred from beam center.
 
     Returns
     -------
@@ -471,13 +471,13 @@ def par_to_poni(par, detector_shape=None):
     if detector_shape is None:
         shape_fast = max(int(2 * yc + 1), 2)
         shape_slow = max(int(2 * zc + 1), 2)
-        detector_shape = (shape_fast, shape_slow)
+        detector_shape = (shape_slow, shape_fast)
     else:
-        shape_fast, shape_slow = int(detector_shape[0]), int(detector_shape[1])
+        shape_slow, shape_fast = int(detector_shape[0]), int(detector_shape[1])
 
     # pyFAI _reorder_indexes_from_orientation uses shape[0]-1 for d1 (slow axis)
-    # and shape[1]-1 for d2 (fast axis).  detector_shape is (fast_dim, slow_dim)
-    # so shape[0] maps to slow_dim = detector_shape[1], shape[1] maps to fast_dim.
+    # and shape[1]-1 for d2 (fast axis).  detector_shape is (slow_dim, fast_dim)
+    # matching pyFAI's C-order shape convention.
     max_d1 = shape_slow - 1.0
     max_d2 = shape_fast - 1.0
 
@@ -525,9 +525,10 @@ def poni_to_par(poni, detector_shape=None):
         Keys: dist, poni1, poni2, rot1, rot2, rot3,
         pixel1, pixel2, wavelength, orientation.
         All lengths and wavelength in meters.
-    detector_shape : (fast_dim, slow_dim) tuple, optional
-        Detector pixel dimensions, needed to reverse orientation-specific
-        PONI formulas. Defaults to square inferred from poni.
+    detector_shape : (slow_dim, fast_dim) tuple, optional
+        Detector pixel dimensions matching pyFAI's C-order shape
+        convention: shape[0] = slow (height/rows), shape[1] = fast
+        (width/columns).  Defaults to square inferred from poni.
 
     Returns
     -------
@@ -560,11 +561,10 @@ def poni_to_par(poni, detector_shape=None):
 
     if detector_shape is None:
         shape_fast = shape_slow = max(int(2 * max(abs(poni1/pv), abs(poni2/ph)) + 2), 2)
-        detector_shape = (shape_fast, shape_slow)
+        detector_shape = (shape_slow, shape_fast)
     else:
-        shape_fast, shape_slow = int(detector_shape[0]), int(detector_shape[1])
+        shape_slow, shape_fast = int(detector_shape[0]), int(detector_shape[1])
 
-    # Same convention as in par_to_poni: shape[0] maps to slow_dim (detector_shape[1])
     max_d1 = shape_slow - 1.0
     max_d2 = shape_fast - 1.0
 

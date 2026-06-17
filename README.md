@@ -15,7 +15,7 @@ Requires `numpy`, `scipy`.  Put `par_to_poni.py` next to your script and import 
 ```python
 import par_to_poni as pp
 
-pyFAI_detector_shape = (2068, 2162)   # Eiger 4M: (fast, slow)
+pyFAI_detector_shape = (2162, 2068)   # Eiger 4M: (slow, fast)
 
 # par → poni
 par = pp.read_par("geometry.par")
