@@ -593,15 +593,21 @@ For the lab coordinates to match for all pixels, the linear mappings must
 be identical:
 
 ```
-S(orient) · R_comp · C(orient) = R_tilt · Z(flip)
+S(orient) · R_comp · C(orient) = M · R_tilt · Z(flip)
 ```
+
+where M is a per-orientation mirror matrix (identity for orient 3,
+diag(−1,1,1) for orient 2, diag(1,−1,1) for orient 4, diag(−1,−1,1)
+for orient 1). The mirror relaxes strict xyz matching to keep distance
+positive while preserving 2θ and azimuth. The equation without M is the
+limiting case for orient 3.
 
 This is a 3×2 matrix equation (first two columns). The compensated
 rotation R_comp is found by solving column-by-column:
 
 ```
-R_comp[:,0] = S · R_tilt[:,0] · (o11 / c1)
-R_comp[:,1] = S · R_tilt[:,1] · (-o22 / c2)
+R_comp[:,0] = S · M · R_tilt[:,0] · (o11 / c1)
+R_comp[:,1] = S · M · R_tilt[:,1] · (-o22 / c2)
 ```
 
 The third column is the cross product, ensuring det(R_comp) = +1.
@@ -627,9 +633,10 @@ the beam center in native coordinates maps differently:
 ### Conclusion
 
 The conversion between par and poni is exact for all 4 non-transpose
-flip→orientation pairs. The compensated rotation handles the sign-flip
-non-commutativity, and orientation-specific PONI formulas handle the
-pixel reordering. Verified by test tolerances of 1e-7 rad (2θ, azimuth)
-and 5e-7 m (lab coordinates) on a non-square 200×128 detector with no
-coordinate flipping. For implementation details see `par_to_poni.py`.
+flip→orientation pairs. The compensated rotation handles pixel-reordering
+and sign-flip non-commutativity; per-orientation mirror matrices keep
+distance positive; orientation-specific PONI formulas handle the beam-center
+mapping. Verified by test tolerances of 1e-7 rad (2θ, azimuth) and
+5e-7 m (lab coordinates after per-orientation mirror reflections) on a
+non-square 200×128 detector. For implementation details see `par_to_poni.py`.
 ```
