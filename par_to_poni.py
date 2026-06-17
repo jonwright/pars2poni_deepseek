@@ -172,7 +172,11 @@ def _compute_compensated_rotation(o11, o22, orient, r1_std, r2_std, r3_std):
     Solving:  R_comp[:,0] = S . R_tilt[:,0] . (o11 / c1)
               R_comp[:,1] = S . R_tilt[:,1] . (-o22 / c2)
 
-    Returns (rot1, rot2, rot3) with cos(rot1).cos(rot2) > 0.
+    Returns (rot1, rot2, rot3).  For orientations 2 and 4 the
+    compensated rotation matrix has R[2,2] < 0 in ZYX Euler convention,
+    giving cos(rot1)·cos(rot2) < 0.  No equivalent parametrization with
+    positive cos-product exists; the signed distance is handled correctly
+    by the round-trip.
     """
     S_diag = {3: (1, 1, 1), 2: (-1, 1, 1), 4: (1, -1, 1), 1: (-1, -1, 1)}[orient]
     c1 = -1.0 if orient in (2, 1) else 1.0

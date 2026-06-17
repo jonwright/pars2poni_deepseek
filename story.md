@@ -320,7 +320,7 @@ tests + documentation consistency audit: $0.32
 ## LLM Attribution
 
 Model used: DeepSeek V4 Pro on medium thinking (generation and all revisions).
-Total cost: $1.18 ($0.74 original + $0.32 referee resolution + $0.12 round 2).
+Total cost: $1.57 ($0.74 original + $0.32 referee resolution + $0.51 round 2).
 
 ---
 
@@ -389,7 +389,7 @@ The following sections in story.md above contain claims from earlier
 iterations that are known to be stale but are preserved as-is per the
 story.md convention (append-only, don't rewrite history):
 
-- **"20 tests"** (line ~234): Now 21 tests.
+- **"20 tests"** (line ~234): Now 22 tests.
 - **Coordinate test for "orientation 3 only"** (lines ~237-247): The test
   actually covers all 4 orientations (confirmed by test_lab_coords_match_all_orientations).
 - **"Raw pixel indices cannot be compared directly"** (line ~243): The
@@ -400,5 +400,13 @@ story.md convention (append-only, don't rewrite history):
 ### Cost
 
 Round 2: bug fixes (max_d1/max_d2 swap, test shape fix) + rotation validation
-test + documentation consistency audit.
+test + integration test (pyFAI.load + integrate1d) + documentation consistency.
 **$0.12**
+
+### Cost (Final Resolution)
+
+Analysis of negative-distance mathematical necessity, removal of stale
+S-matrix equation (erroneous attempt), full documentation consistency audit
+across all 5 files: **$0.39**
+
+Total round 2: $0.51

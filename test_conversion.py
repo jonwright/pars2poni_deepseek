@@ -21,12 +21,15 @@ from scipy.spatial.transform import Rotation as ScipyRotation
 
 import par_to_poni as pp
 from pyFAI.integrator.azimuthal import AzimuthalIntegrator
+import pyFAI
 from ImageD11.transform import (
     compute_xyz_lab,
     compute_tth_eta,
     detector_rotation_matrix,
 )
 from ImageD11.parameters import parameters as ImageD11Parameters
+
+print(f"pyFAI version: {pyFAI.version}")
 
 
 # ---------------------------------------------------------------------------
@@ -475,6 +478,26 @@ class TestIO(unittest.TestCase):
                     par["y_size"], par_unit["y_size"], delta=1e-10,
                     msg=f"{unit}: y_size"
                 )
+
+    def test_write_poni_loads_and_integrates(self):
+        """Written poni loads with pyFAI.load() and integrate1d succeeds."""
+        for o11, o12, o21, o22, orientation, label in FLIPS:
+            with self.subTest(flip=label):
+                par = make_base_par()
+                for k in ['o11', 'o12', 'o21', 'o22']:
+                    par[k] = locals()[k]
+                poni = pp.par_to_poni(par, detector_shape=DETECTOR_SHAPE)
+
+                poni_file = os.path.join(self.tmpdir, f"test_{label}.poni")
+                pp.write_poni(poni, poni_file)
+
+                ai = pyFAI.load(poni_file)
+                ai.detector.shape = DETECTOR_SHAPE
+                shape_fast, shape_slow = DETECTOR_SHAPE
+                img = np.ones((shape_slow, shape_fast), dtype=np.float64)
+                result = ai.integrate1d(img, 20)
+                self.assertGreater(len(result.radial), 0,
+                                   msg=f"{label}: integration produced no output")
 
 
 class TestEdgeCases(unittest.TestCase):

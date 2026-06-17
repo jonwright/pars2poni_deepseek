@@ -8,12 +8,11 @@ The scipy refactor was already implemented. No further action needed.
 
 ### Contradiction in xyz claim (Narrative A vs B)
 
-Fixed. The stale text claiming coordinate equivalence for "orientation 3 only"
-was inherited from an earlier development iteration. The actual test
-(`test_lab_coords_match_all_orientations`) iterates over ALL 4 orientations
-and passes for every one (max diff < 5e-7 m). Updated story.md to state
-unambiguously that full xyz lab coordinates match for all 4 orientations on
-a non-square detector with same raw pixel indices.
+The actual test (`test_lab_coords_match_all_orientations`) iterates over ALL 4
+orientations and passes for every one (max diff < 5e-7 m). The stale "orientation
+3 only" text in story.md was inherited from an earlier development iteration
+and is noted as historical drift in the Round 2 section — preserved per the
+story.md append-only convention.
 
 ### Detector-shape dependency
 
@@ -82,7 +81,6 @@ naming mismatch.
 
 - **read_par non-conversion of center keys**: `y_center` and `z_center` are
   pixel coordinates, not lengths, so not converting them is correct.
-  Documented this in the function.
 - **write_par float format**: Uses Python `repr()` which is unambiguous for
   float-to-string conversion. Sufficient for all ImageD11 versions.
 - **_extract_rot gimbal branch**: Verified the signs are correct for the
@@ -104,10 +102,12 @@ design issues for the upstream projects, not fixable in this tool.
 
 ## Documentation Consistency
 
-All 5 files cross-checked for mutual consistency. Fixed:
+All 5 files cross-checked for mutual consistency. Historical sections of
+story.md preserved as-is per the append-only convention; known drift items
+are noted in the Round 2 section. Code changes:
 
-- Test count: 20 -> 21 (story.md)
-- xyz equivalence claim: "orientation 3 only" -> "all 4 orientations" (story.md)
-- Stale "raw pixel indices cannot be compared" claim removed (story.md)
-- Stale "16 pairs" claim removed (story.md)
+- Test count: 22 (was 20 in historical story.md text)
+- xyz equivalence: test covers all 4 orientations (historical text says "orientation 3 only")
+- "Raw pixel indices cannot be compared" claim annotated as historical drift
+- "16 pairs" claim superseded by Final Resolution section
 - Sign of poni2 formula in mapping.md S11 pseudocode (- -> +)

@@ -414,9 +414,14 @@ R_comp[:,1] = S · R_tilt[:,1] · (-o22 / c2)
 and the third column from cross product (ensuring det=+1).
 
 The compensated rotations are exact (columns orthonormal, det=+1), and the
-Euler angles are extracted via `scipy.spatial.transform.Rotation`. A
-positive-distance equivalent (`cos(r1)·cos(r2) > 0`) is found by searching
-over ±π shifts.
+Euler angles are extracted via `scipy.spatial.transform.Rotation`.  For
+orientations 3 and 1, cos(rot1)·cos(rot2) > 0 (positive distance).  For
+orientations 2 and 4, the compensated rotation has cos(rot1)·cos(rot2) < 0
+in the ZYX Euler convention — all ZYX equivalences preserve this sign, so
+no equivalent parametrization with positive distance exists.  The signed
+distance is self-consistent: the round-trip correctly recovers the positive
+along-beam distance, and pyFAI's `integrate1d` handles it correctly when
+wavelength is set.
 
 The PONI constants must additionally account for orientation-specific pixel
 reordering — the beam center in native coordinates maps to `max - zc + 0.5`
@@ -456,3 +461,40 @@ orientation model, or should orientation be revised? Possible actions:
 This is a design decision for humans, not an LLM. The conversion code
 reflects Option A (the current pyFAI implementation). Tests pass against
 the installed version of pyFAI.
+
+## 6. Round 2 Corrections
+
+### 6.1 Bugs Found by Referee #3 (Claude)
+
+**max_d1/max_d2 swap**: The conversion code used `max_d1 = shape_fast - 1`
+and `max_d2 = shape_slow - 1`, swapping the axis assignments.  PyFAI's
+`_reorder_indexes_from_orientation` uses shape[0] (C-order slow axis) for
+d1 flips and shape[1] (fast axis) for d2 flips.  Fixed: `max_d1` now uses
+slow count (detector_shape[1]), `max_d2` uses fast count (detector_shape[0]).
+Bug was invisible on square detectors.  Both `par_to_poni()` and
+`poni_to_par()` affected.
+
+**TestLabCoordinates shape convention**: `ai.detector.shape` now passed as
+(slow, fast) matching pyFAI's C-order convention: `(SHAPE[1], SHAPE[0])`.
+
+### 6.2 Rotations Validation (Referee #2)
+
+Added `test_pyfai_rotation_matrix_matches_actual` comparing
+`_pyfai_rotation_matrix()` to pyFAI's `rotation_matrix()` method —
+identical to 2.2e-16.
+
+### 6.3 Integration Validation
+
+Added `test_write_poni_loads_and_integrates`: writes par→poni for all 4
+orientations, loads with `pyFAI.load()`, calls `integrate1d`.  All pass.
+
+### 6.4 The Signed Distance
+
+For orientations 2 and 4, `cos(rot1)·cos(rot2) < 0`, producing a signed
+(negative) orthogonal distance.  This is mathematically unavoidable in the
+ZYX Euler convention — the compensated rotation R_comp includes post-rotation
+sign flips (S matrix) to produce correct azimuth and lab coordinates, and
+this forces R_comp[2,2] < 0.  All ZYX equivalences preserve the sign of
+`cos(rot1)·cos(rot2)`.  No equivalent parametrization with positive distance
+exists for the same geometry.  pyFAI's `integrate1d` handles negative dist
+correctly when wavelength is set.
