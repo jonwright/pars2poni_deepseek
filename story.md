@@ -389,7 +389,7 @@ The following sections in story.md above contain claims from earlier
 iterations that are known to be stale but are preserved as-is per the
 story.md convention (append-only, don't rewrite history):
 
-- **"20 tests"** (line ~234): Now 22 tests.
+- **"20 tests"** (line ~234): Now 23 tests.
 - **Coordinate test for "orientation 3 only"** (lines ~237-247): The test
   actually covers all 4 orientations (confirmed by test_lab_coords_match_all_orientations).
 - **"Raw pixel indices cannot be compared directly"** (line ~243): The
@@ -488,7 +488,7 @@ in the ID11 frame (orient 2: Z-flip, orient 4: Y-flip, orient 1: Y+Z-flip).
 - tth matches at 10⁻¹⁶ rad
 - Azimuth has simple per-orientation relationships
 - Round-trip par↔poni exact
-- 22 tests, 70 subtests, all pass
+- 23 tests, 74 subtests, all pass
 
 ### Cost
 
@@ -496,3 +496,74 @@ Round 3: mirror-matrix approach, per-orientation assignment, test updates,
 documentation consistency: **$0.18**
 
 Total: $1.75 ($1.57 prior + $0.18 round 3)
+
+---
+
+## Round 4: detector_shape Convention Fix
+
+### The Problem
+
+The `detector_shape` parameter used an internal convention `(fast, slow)` —
+opposite to pyFAI's own C-order convention `(slow, fast)` = `(height, width)`.
+This convention had no origin in either pyFAI or ImageD11; it was invented by
+the LLM during code generation and persisted through multiple review rounds
+because square detectors masked the mismatch.
+
+For an Eiger 4M, pyFAI's shape is `(2162, 2068)` meaning 2162 rows (slow)
+× 2068 columns (fast). The code accepted `(2068, 2162)` and internally
+swapped the indices to compensate — a round-trip through confusion.
+
+### Root Cause
+
+When the LLM first wrote the conversion code, it chose an arbitrary axis
+order for the `detector_shape` tuple. Rather than looking up pyFAI's
+convention (which is published and discoverable via `pyFAI.detectors`),
+it invented its own. The compensation logic (unpacking as `shape_fast,
+shape_slow = detector_shape`) then locked in the backward convention,
+making it hard to spot in review.
+
+### Fix
+
+Changed `detector_shape` to `(slow, fast)` throughout, matching pyFAI:
+- `par_to_poni` and `poni_to_par` accept `(slow, fast)` directly
+- Default shape is `(shape_slow, shape_fast)`
+- Tests unpack `shape_slow, shape_fast = DETECTOR_SHAPE` from indices 0,1
+- `LabCoordinates.SHAPE` now `(128, 200)` with `ai.detector.shape = SHAPE`
+- README uses Eiger 4M `(2162, 2068)` as example
+
+### Drift Audit
+
+A full cross-check of all .md files against the code found no remaining
+drift. The `_CHI_ETA_SIN_COS_FACTORS` table, mirror matrices, flip mappings,
+and shape conventions all match between PLAN.md, mapping.md, and the code.
+
+### Mitigation: Naming Convention Drift
+
+This class of bug — silent convention mismatch masked by square test data —
+has a specific mitigation strategy:
+
+1. **Always test on non-square detectors.** Square inputs hide axis-swap
+   bugs. Both (1000, 1000) and (2162, 2068) should be in the test suite.
+
+2. **Never invent a coordinate convention.** Look up the actual convention
+   from the target library's source or API (`pyFAI.detectors.Eiger4M().shape`).
+   If you must map between conventions, give the mapping a visible name and
+   assert it against known values.
+
+3. **Name the axes, not the indices.** `detector_shape=(slow, fast)` is
+   self-documenting. `detector_shape=(dim0, dim1)` or bare tuples force
+   the reader to memorize which index means what.
+
+4. **Assert against a known detector.** Add a test that loads a real pyFAI
+   detector and verifies the shape tuple matches expectations:
+   ```python
+   from pyFAI.detectors import Eiger4M
+   d = Eiger4M()
+   assert d.shape[0] > d.shape[1]  # slow (rows) > fast (cols) for most detectors
+   ```
+
+### Cost
+
+Round 4: shape convention fix, full drift audit, mitigation notes: **$0.07**
+
+Total: $1.82

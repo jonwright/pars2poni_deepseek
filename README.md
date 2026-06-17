@@ -15,16 +15,16 @@ Requires `numpy`, `scipy`.  Put `par_to_poni.py` next to your script and import 
 ```python
 import par_to_poni as pp
 
-pyFAI_detector_shape = (2162, 2068)   # Eiger 4M: (slow, fast)
+shape = (2162, 2068)   # Eiger 4M: (slow, fast)
 
 # par → poni
 par = pp.read_par("geometry.par")
-poni = pp.par_to_poni(par, detector_shape=pyFAI_detector_shape)
+poni = pp.par_to_poni(par, detector_shape=shape)
 pp.write_poni(poni, "geometry.poni")
 
 # poni → par
 poni = pp.read_poni("geometry.poni")
-par = pp.poni_to_par(poni, detector_shape=pyFAI_detector_shape)
+par = pp.poni_to_par(poni, detector_shape=shape)
 pp.write_par(par, "geometry.par")
 
 ## Azimuth mapping (chi ↔ eta)
