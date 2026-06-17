@@ -483,7 +483,7 @@ def par_to_poni(par, detector_shape=None):
 
     # PONI with 0.5 correction (orientation 3 / native form)
     pon1 = -dist * sin(r2) + zs * (zc + 0.5)
-    pon2 = -dist * cos(r2) * sin(r1) + ys * (yc + 0.5)
+    pon2 = dist * cos(r2) * sin(r1) + ys * (yc + 0.5)
     # For orientation 2/1 (d1 flipped): zs*(shape[0]-1 - zc + 0.5)
     # For orientation 4/1 (d2 flipped): ys*(shape[1]-1 - yc + 0.5)
 

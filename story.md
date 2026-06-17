@@ -320,4 +320,85 @@ tests + documentation consistency audit: $0.32
 ## LLM Attribution
 
 Model used: DeepSeek V4 Pro on medium thinking (generation and all revisions).
-Total cost: $1.06 ($0.74 original + $0.32 referee resolution).
+Total cost: $1.18 ($0.74 original + $0.32 referee resolution + $0.12 round 2).
+
+---
+
+## Round 2 Referee Review
+
+### Prompt
+
+There are now 3 new referee reports on the new code on GitHub (which should
+match the code here). #1 is happy but #2 and #3 still have some minor concerns.
+Please review all the code in the repo and their new reports and then propose
+any changes. Write a response2.md which very briefly explains how you resolve
+their issues. Take care to follow the instructions in story.md to avoid drift
+problems. The complete repo must be correct and consistent (code is truth,
+docstrings and md files must match code). Add this prompt to story.md and ask
+me for the updated cost for round2 review before committing to git.
+
+### Referee Reports
+
+**Referee #1 (Gemini)**: Happy. No action needed.
+
+**Referee #2 (ChatGPT)** second comment on the resubmission raised:
+- Contradiction in story.md between "xyz equivalence for orientation 3 only"
+  vs "all 4 orientations" (Narrative A vs B). The code actually proves all 4.
+- Detector-shape dependency as a design concern.
+- Compensated rotation meaning should be documented.
+Also requested direct validation against pyFAI's actual rotation_matrix().
+
+**Referee #3 (Claude)** second comment found four concrete problems:
+1. Non-square detector test had d1/d2 max values swapped (invisible on square
+   detectors). Both `par_to_poni.py` and `TestLabCoordinates` affected.
+2. `_find_positive_equiv_from_angles` silent fallback — determined to be correct
+   and necessary (compensated rotation for orient 2/4 has no positive-distance
+   equivalent parametrization).
+3. Transpose flips unsupported — pyFAI limitation, not tool gap.
+4. Fast/slow naming inverted relative to pyFAI C-order convention.
+
+Also identified three upstream structural mismatches (two-level orientation,
+left-handed rotations, 0.5 pixel offset) that the tool correctly handles but
+are not fixable here.
+
+### Changes Made
+
+**par_to_poni.py**:
+- Swapped `max_d1`/`max_d2`: `max_d1` now uses slow count (detector_shape[1]),
+  `max_d2` uses fast count (detector_shape[0]), matching pyFAI's shape[0]/shape[1]
+  convention for d1/d2 flips. Both `par_to_poni()` and `poni_to_par()`.
+- Updated naming convention comments to map between codebase (fast,slow) and
+  pyFAI C-order (slow=shape[0], fast=shape[1]).
+- Documented `_find_positive_equiv_from_angles` fallback as correct/necessary.
+- `_pyfai_rotation_matrix` docstring references new validation test.
+
+**test_conversion.py**:
+- `TestLabCoordinates`: `ai.detector.shape` now `(SHAPE[1], SHAPE[0])`
+  matching pyFAI C-order convention (was passed as-is causing shape mismatch).
+- Added `test_pyfai_rotation_matrix_matches_actual` comparing our implementation
+  to pyFAI's `rotation_matrix()` — identical to 2.2e-16 for 6 angle combos.
+
+**mapping.md**:
+- Fixed sign of poni2 formula in §11 pseudocode (`-` → `+`).
+
+**response2.md**: New file with full response to both referees.
+
+### Historical Drift Notes (preserved as historical record)
+
+The following sections in story.md above contain claims from earlier
+iterations that are known to be stale but are preserved as-is per the
+story.md convention (append-only, don't rewrite history):
+
+- **"20 tests"** (line ~234): Now 21 tests.
+- **Coordinate test for "orientation 3 only"** (lines ~237-247): The test
+  actually covers all 4 orientations (confirmed by test_lab_coords_match_all_orientations).
+- **"Raw pixel indices cannot be compared directly"** (line ~243): The
+  test proves they can — same indices, no pre-flipping.
+- **"All 16 flip→orientation pairs"** (line ~260): The Final Resolution
+  section below supersedes this — only 4 non-transpose pairs are valid.
+
+### Cost
+
+Round 2: bug fixes (max_d1/max_d2 swap, test shape fix) + rotation validation
+test + documentation consistency audit.
+**$0.12**

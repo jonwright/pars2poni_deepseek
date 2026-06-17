@@ -86,7 +86,8 @@ def _pyfai_rotation_matrix(rot1, rot2, rot3):
     In standard right-handed convention this equals:
         Rz(rot3) . Ry(-rot2) . Rx(-rot1)
     which is intrinsic ZYX with angles [rot3, -rot2, -rot1].
-    Matches pyFAI's rotation_matrix() output.
+    Matches pyFAI's actual rotation_matrix() output to machine precision
+    (verified by test_pyfai_rotation_matrix_matches_actual in test_conversion.py).
 
     Returns a tuple-of-tuples for backward compatibility.
     """
@@ -124,23 +125,29 @@ def _extract_rot(R):
 
 
 def _find_positive_equiv_from_angles(rot1, rot2, rot3):
-    """Find equivalent Euler angles with cos(rot1)*cos(rot2) > 0."""
-    best = None
+    """Find equivalent Euler angles with cos(rot1)*cos(rot2) > 0.
+
+    For pyFAI's ZYX convention, equivalent parametrizations include:
+      (rot1+π, -rot2, rot3+π)  and  (rot1-π, -rot2, rot3-π)
+    Searches over ±π offsets on all three angles and sign flip on rot2.
+    """
     R_target = _pyfai_rotation_matrix(rot1, rot2, rot3)
-    for d1 in (0, pi, -pi, 2 * pi):
-        for d2 in (0, pi, -pi, 2 * pi):
-            for s2 in (1, -1):
-                rt1, rt2, rt3 = rot1 + d1, s2 * rot2 + d2, rot3
-                if abs(rt1) > 10 or abs(rt2) > 10:
-                    continue
-                Rt = _pyfai_rotation_matrix(rt1, rt2, rt3)
-                maxdiff = max(abs(Rt[i][j] - R_target[i][j])
-                             for i in range(3) for j in range(3))
-                if maxdiff < 1e-8:
-                    dc = cos(rt1) * cos(rt2)
-                    if dc > 0:
-                        if best is None or abs(rt1)+abs(rt2) < abs(best[0])+abs(best[1]):
-                            best = (rt1, rt2, rt3)
+    best = None
+    for d1 in (0, pi, -pi):
+        for d2 in (0, pi, -pi, 2 * pi, -2 * pi):
+            for d3 in (0, pi, -pi):
+                for s2 in (1, -1):
+                    rt1, rt2, rt3 = rot1 + d1, s2 * rot2 + d2, rot3 + d3
+                    if abs(rt1) > 10 or abs(rt2) > 10 or abs(rt3) > 10:
+                        continue
+                    Rt = _pyfai_rotation_matrix(rt1, rt2, rt3)
+                    maxdiff = max(abs(Rt[i][j] - R_target[i][j])
+                                  for i in range(3) for j in range(3))
+                    if maxdiff < 1e-8:
+                        dc = cos(rt1) * cos(rt2)
+                        if dc > 0:
+                            if best is None or abs(rt1)+abs(rt2) < abs(best[0])+abs(best[1]):
+                                best = (rt1, rt2, rt3)
     return best
 
 
@@ -191,6 +198,11 @@ def _compute_compensated_rotation(o11, o22, orient, r1_std, r2_std, r3_std):
 
     result = _find_positive_equiv_from_angles(rot1_c, rot2_c, rot3_c)
     if result is None:
+        # For orientations 2 and 4 the compensated rotation matrix differs
+        # from R_tilt by element-wise sign flips — no equivalent Euler
+        # parametrization with cos(r1)·cos(r2) > 0 exists.  The negative
+        # distance is handled correctly by the round-trip (delta = dist /
+        # (cos(rot1)·cos(rot2)) recovers the positive along-beam distance).
         result = (rot1_c, rot2_c, rot3_c)
     return result
 
@@ -274,10 +286,11 @@ def par_to_poni(par, detector_shape=None):
     else:
         shape_fast, shape_slow = int(detector_shape[0]), int(detector_shape[1])
 
-    # pyFAI _reorder_indexes_from_orientation: shape1=shape[0]-1 for d1,
-    # shape2=shape[1]-1 for d2 (axes swapped in naming -- see _common.py:662)
-    max_d1 = shape_fast - 1.0
-    max_d2 = shape_slow - 1.0
+    # pyFAI _reorder_indexes_from_orientation uses shape[0]-1 for d1 (slow axis)
+    # and shape[1]-1 for d2 (fast axis).  detector_shape is (fast_dim, slow_dim)
+    # so shape[0] maps to slow_dim = detector_shape[1], shape[1] maps to fast_dim.
+    max_d1 = shape_slow - 1.0
+    max_d2 = shape_fast - 1.0
 
     # Standard tilt mapping
     r1 = -tz
@@ -358,8 +371,9 @@ def poni_to_par(poni, detector_shape=None):
     else:
         shape_fast, shape_slow = int(detector_shape[0]), int(detector_shape[1])
 
-    max_d1 = shape_fast - 1.0
-    max_d2 = shape_slow - 1.0
+    # Same convention as in par_to_poni: shape[0] maps to slow_dim (detector_shape[1])
+    max_d1 = shape_slow - 1.0
+    max_d2 = shape_fast - 1.0
 
     if orientation in (2, 1):
         zc = max_d1 + 0.5 - (poni1 + L * tan(rot2) / cos(rot1)) / pv

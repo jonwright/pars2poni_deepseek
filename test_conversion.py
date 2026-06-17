@@ -367,7 +367,9 @@ class TestLabCoordinates(unittest.TestCase):
                     rot1=poni["rot1"], rot2=poni["rot2"], rot3=poni["rot3"],
                     pixel1=poni["pixel1"], pixel2=poni["pixel2"],
                     wavelength=poni["wavelength"], orientation=orientation)
-                ai.detector.shape = self.SHAPE
+                # pyFAI uses C-order shape convention: shape[0]=slow, shape[1]=fast.
+                # Our SHAPE is (fast_dim, slow_dim), so pass (slow, fast) to pyFAI.
+                ai.detector.shape = (self.SHAPE[1], self.SHAPE[0])
 
                 t3v, t1v, t2v = ai.calc_pos_zyx(d1=d1, d2=d2)
                 xyz_py = np.column_stack([t3v, -t2v, t1v])
@@ -521,6 +523,29 @@ class TestEdgeCases(unittest.TestCase):
         """Unsupported transpose flips raise ValueError."""
         with self.assertRaises(ValueError):
             pp.flip_to_orientation(0, 1, 1, 0)
+
+    def test_pyfai_rotation_matrix_matches_actual(self):
+        """Our _pyfai_rotation_matrix matches pyFAI's rotation_matrix()."""
+        import numpy as np
+        from pyFAI.integrator.azimuthal import AzimuthalIntegrator
+        test_cases = [
+            (0.0, 0.0, 0.0),
+            (0.1, 0.2, 0.3),
+            (-0.15, 0.0, 0.7),
+            (0.5, -0.5, 0.0),
+            (0.0, 1.4, 0.0),
+            (-0.3, 0.2, -0.15),
+        ]
+        for rot1, rot2, rot3 in test_cases:
+            with self.subTest(rot1=rot1, rot2=rot2, rot3=rot3):
+                ai = AzimuthalIntegrator(dist=0.1, poni1=0.0, poni2=0.0,
+                                          rot1=rot1, rot2=rot2, rot3=rot3,
+                                          pixel1=75e-6, pixel2=75e-6)
+                R_pyfai = ai.rotation_matrix()
+                R_ours = np.array(pp._pyfai_rotation_matrix(rot1, rot2, rot3))
+                diff = np.max(np.abs(R_pyfai - R_ours))
+                self.assertLess(diff, 1e-14,
+                                msg=f"rot=({rot1},{rot2},{rot3}) diff={diff:.2e}")
 
     def test_too_large_tilts(self):
         """Tilts up to +-pi/4 round-trip correctly."""
