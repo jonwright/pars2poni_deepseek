@@ -649,7 +649,7 @@ class TestAllSolutions(unittest.TestCase):
 
     NCOORDS = 2000
 
-    def test_four_solutions_orient2(self):
+    def test_solution_structure_all_groups(self):
         """For a single par (flip orient 2), find_all_poni_solutions
         enumerates 32 unique solutions (4 orientations × 4 mirrors × 2 Euler reps).
 

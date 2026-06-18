@@ -613,17 +613,11 @@ def find_all_poni_solutions(par, detector_shape=None,
                             include_backscattering=False):
     """Find all valid pyFAI poni solutions for a given ImageD11 par dict.
 
-    Enumerates the **16 cross-mappings** between the 4 ImageD11 flip
-    matrices and the 4 pyFAI orientations.  For each (flip, orient) pair
-    the rotation-compensation equation
-
-        S(orient) · R · C(orient) = M · R_tilt · Z(flip)
-
-    is solved with each of the 4 distinct mirror matrices
-    {I, M(1), M(2), M(4)} (M(3) = I so it is not repeated).  Each
-    solution matrix has two equivalent Euler-angle representations
-    (the ZYX β-solution pair), giving **four** distinct ``(rot1,rot2,rot3)``
-    tuples per (flip, orient) pair → up to 16×4 = 64 solutions.
+    For the flip carried by the ``par`` argument, enumerates **32 solutions**
+    — 4 trial pyFAI orientations × 4 mirror matrices {M1, M2, M3=I, M4}
+    × 2 ZYX Euler-angle representations per rotation matrix.  Across all 4
+    possible flip matrices the solution set is flip-independent (the same
+    32 unique (rot, dist) tuples appear for every flip).
 
     When ``include_backscattering=True``, seed rotations with ±π offsets
     on rot1 or rot2 are additionally explored to discover representations
@@ -646,11 +640,13 @@ def find_all_poni_solutions(par, detector_shape=None,
         ``poni`` — the poni dict,
         ``use_mirror`` — whether a non-identity mirror was used,
         ``dist_positive`` — whether orthogonal distance is positive,
-        ``chi_eta_exact`` — True if chi = 90°−eta (identity mirror),
+        ``chi_eta_exact`` — True when mirror matches trial orientation
+            (canonical azimuth mapping: S·M=I in the coordinate frame),
         ``rot_magnitude`` — |rot1| + |rot2| + |rot3| (for ranking),
         ``flip_label`` — which ImageD11 flip (e.g. "F_o3"),
         ``orient_tried`` — which pyFAI orientation was tried,
-        ``mirror_source`` — which mirror was used ("I", "M1", "M2", "M4").
+        ``mirror_source`` — which mirror was used ("M3", "M1", "M2", "M4"),
+        ``is_canonical`` — whether orientation matches canonical for this flip.
         List is sorted best-first (positive distance preferred, then
         smallest rotation magnitude).
     """

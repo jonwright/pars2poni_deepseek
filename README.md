@@ -75,7 +75,7 @@ determined by the mirror matrix.
 | `mirror_source` | Which mirror matrix (M1, M2, M3=I, M4) |
 | `use_mirror` | Whether a non-identity mirror was used |
 | `dist_positive` | Whether orthogonal distance is positive |
-| `chi_eta_exact` | Whether χ = 90° − η (mirror matches orientation) |
+| `chi_eta_exact` | Whether mirror matches trial orientation (canonical azimuth mapping) |
 | `rot_magnitude` | \|rot1\| + \|rot2\| + \|rot3\| (for ranking) |
 | `is_canonical` | Whether orientation matches flip→orient mapping |
 

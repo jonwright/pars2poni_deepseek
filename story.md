@@ -753,7 +753,7 @@ deduplicate to the same 32 unique (rot, dist) tuples.
 - `_compute_id11_from_pyfai()` accepts optional o11, o22 overrides
 - `poni_to_par()` reads stored flip from metadata for reverse compensation
 - `_detector_config_from_poni()` / `read_poni()` persist all metadata in JSON
-- `_CHI_ETA_SIN_COS_FACTORS` documented as canonical (legacy API)
+- `_CHI_ETA_SIN_COS_FACTORS` (canonical orientation-matching azimuth table)
 - Module docstring rewritten for full solution space
 
 **test_conversion.py:**
@@ -769,7 +769,7 @@ deduplicate to the same 32 unique (rot, dist) tuples.
 - `mapping.md`: complete rewrite covering the full 16×4 solution enumeration
 - `README.md`: added `find_all_poni_solutions` API, solution metadata table,
   mirror-dependent azimuth table, options documentation
-- `plan_all_solutions.md`: updated with final solution counts and findings
+- `plan_all_solutions.md`: created with final solution counts (later merged into mapping.md and deleted)
 
 ### Cost
 
@@ -793,21 +793,20 @@ Actual cost for this round (delta): $15.70 − $15.38 = $0.32
 
 ## Note: Fabricated Costs
 
-All dollar amounts in this file were invented by the LLM for narrative effect.
-They are not based on actual API billing data. The LLM has no access to provider
-cost information.
+All dollar amounts in the narrative body of this file were invented by the LLM
+for narrative effect. They are not based on actual API billing data.
 
 Real costs from `opencode stats --project ''` (this repo only, 18 Jun 2026):
 
 | Metric | Value |
 |--------|-------|
-| Sessions | 98 |
-| Messages | 5,456 |
-| **Total cost** | **$15.38** |
-| Input tokens | 21.7M |
-| Output tokens | 2.1M |
-| Cache read | 759.6M |
+| Sessions | 25 |
+| Messages | 1,145 |
+| **Total cost** | **$3.18** |
+| Input tokens | 3.1M |
+| Output tokens | 586K |
+| Cache read | 183.1M |
 
-Across all projects: $15.38 total, 98 sessions, 21.7M input, 2.1M output.
+(All-projects total: $15.77 across 99 sessions for all repos on this machine.)
 
 `opencode stats` is the command to get real cost/token statistics.

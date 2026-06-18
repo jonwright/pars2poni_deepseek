@@ -120,9 +120,9 @@ R_comp[:,1] = S(O) · M · R_tilt[:,1] · (-o22 / c2)
 The third column is the cross product: `R_comp[:,2] = R_comp[:,0] × R_comp[:,1]`.
 
 All scaling factors `o11/c1` and `-o22/c2` have magnitude 1, so the
-columns remain orthonormal. The determinant is always +1 (since the
-cross product of two orthonormal vectors has magnitude 1 and is orthogonal
-to both).  No sign correction is needed.
+columns remain orthonormal. The determinant of ``[r_c0, r_c1, cross(r_c0, r_c1)]``
+is always +1 (the dot-product of the cross product with itself).  The code
+retains a defensive `if det < 0: r_c2 = -r_c2` check as a safety net.
 
 ZYX Euler angles are then extracted from R_comp via scipy's
 `Rotation.from_matrix`.  Each proper rotation matrix has exactly two
@@ -169,9 +169,10 @@ cos(χ) = M[1,1] · sin(η)
 | M1       | −cos(η)     | −sin(η)     | 270° − η |
 
 When the mirror matrix matches the trial orientation (mirror_orient ==
-trial_orient), the combined S·M = I and χ = 90° − η exactly
-(chi_eta_exact = True).  For other mirror choices, the azimuth
-mapping follows the table above.
+trial_orient), the canonical azimuth mapping applies (chi_eta_exact = True).
+This gives χ = 90° − η for orient 3, χ = η − 90° for orient 2,
+χ = η + 90° for orient 4, and χ = 270° − η for orient 1.
+For other mirror choices, the azimuth mapping follows the table above.
 
 Derivation: from t_pyFAI = M · t_id (the mirror-transformed ID11
 coordinates in the pyFAI lab frame) and the definitions
@@ -265,7 +266,19 @@ functions:
 - pyFAI rotation matrix validation against actual pyFAI output
 - Integration test: write .poni → pyFAI.load() → integrate1d()
 
-## 14. Limitations
+## 14. Shape Convention Lock-In
+
+The conversion locks in pyFAI's current orientation implementation as
+observed in source code (`_common.py:657-678`, `_geometry.pyx:68-105`).
+This includes the pixel-reordering convention where `shape[0]-1` is used
+for d1 (slow-axis) flips and `shape[1]-1` for d2 (fast-axis) flips.
+
+The `detector_shape` parameter follows pyFAI's C-order convention:
+`(slow, fast)` = `(shape[0], shape[1])`.  This is the convention used
+throughout the conversion code and tests.  If pyFAI changes its
+orientation model, the conversion code must be updated correspondingly.
+
+## 15. Limitations
 
 - Transpose flips (o12, o21 ≠ 0) are not supported. The 4×4 affine
   analysis shows exact solutions exist, but the mapping to pyFAI's
