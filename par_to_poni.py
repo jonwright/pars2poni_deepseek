@@ -1,18 +1,22 @@
 """
 par_to_poni.py — Convert between ImageD11 .par and pyFAI .poni geometry parameters.
 
-Based on the pyFAI source code analysis of orientation handling:
+Based on pyFAI source code analysis of orientation handling:
 - Pixel reordering: _reorder_indexes_from_orientation  (_common.py:657)
 - Sign flips: f_t1 / f_t2                            (_geometry.pyx:68-105)
 
-Equating the full affine transforms gives exact closed-form solutions
-for all 4 non-transpose flip->orientation pairs, including the pixel
-reordering (C matrix), post-rotation sign flips (S matrix), and
-per-orientation mirror matrices (M) that keep distance positive.
-Transpose flips (o12,o21!=0) are not supported.
+Equating the full affine pipeline gives exact closed-form solutions for all
+4×4 = 16 valid (ImageD11 flip, pyFAI orientation) mappings.  The equation
+
+    S(orient) · R · C(orient) = M · R_tilt · Z(flip)
+
+is solved with each of the 4 distinct mirror matrices {M1, M2, M3=I, M4}.
+Per (orient, mirror) group there are two ZYX Euler-angle representations
+(the β-solution pair), giving 32 unique solutions per flip.  Transpose
+flips (o12,o21≠0) are not supported.
 
 Azimuth mapping — the pyFAI chi and ImageD11 eta angles are related by
-orientation-dependent formulas; see chi_to_eta() and eta_to_chi().
+orientation- and mirror-dependent formulas; see _azimuth_factors().
 
 Dependencies: numpy, scipy (for Rotation). All internal units are meters for
 lengths and meters for wavelength.
@@ -36,6 +40,12 @@ Usage:
     # Orientation can come from a par or poni dict:
     eta_rad = pp.chi_to_eta(chi_rad, par)
     chi_rad = pp.eta_to_chi(eta_rad, poni)
+
+    # Find all valid solutions (4 orientations × 4 mirrors × 2 Euler reps):
+    solutions = pp.find_all_poni_solutions(par, detector_shape=(2162, 2068))
+    for s in solutions:
+        print(s["flip_label"], s["orient_tried"], s["mirror_source"],
+              s["dist_positive"], s["chi_eta_exact"])
 """
 
 import json
@@ -102,6 +112,29 @@ _CHI_ETA_SIN_COS_FACTORS = {
     4: (+1, -1),   # chi =  eta + 90°    sin(chi) = +cos(eta)  cos(chi) = −sin(eta)
     1: (-1, -1),   # chi = 270° − eta    sin(chi) = −cos(eta)  cos(chi) = −sin(eta)
 }
+
+
+def _azimuth_factors(mirror_orient):
+    """Return the (sin_factor, cos_factor) for the azimuth mapping
+    chi ↔ eta given a mirror orientation.
+
+    The relationship is:
+        sin(chi) = sin_factor · cos(eta)
+        cos(chi) = cos_factor · sin(eta)
+
+    Derivation:  From t_pyFAI = M · t_id (the mirror-transformed
+    ID11 coordinates in the pyFAI lab frame), chi = atan2(m0·t0, m1·t1)
+    and eta = atan2(t1, t0), where M = diag(m0, m1, 1) = M(mirror_orient).
+    Therefore sin(chi) = m0·cos(eta), cos(chi) = m1·sin(eta).
+    The factors are the first two diagonal entries of the mirror matrix.
+    """
+    M_diag_axes = {
+        3: (+1, +1),   # M(3) = I
+        2: (-1, +1),   # M(2) = diag(-1, 1, 1)
+        4: (+1, -1),   # M(4) = diag(1, -1, 1)
+        1: (-1, -1),   # M(1) = diag(-1, -1, 1)
+    }
+    return M_diag_axes.get(mirror_orient, (+1, +1))
 
 
 def chi_to_eta(chi_rad, orientation):
@@ -308,6 +341,41 @@ def _find_positive_equiv_from_angles(rot1, rot2, rot3):
     return best
 
 
+def _find_all_rot_equivs(rot1, rot2, rot3):
+    """Find all equivalent (rot1,rot2,rot3) that produce the same rotation matrix.
+
+    For pyFAI's ZYX convention the key equivalence is:
+      Rz(rot3)·Ry(−rot2)·Rx(−rot1)  =  Rz(rot3+π)·Ry(rot2)·Rx(−rot1+π)
+    which in terms of the pyFAI angle tuple is (rot1−π, −rot2, rot3+π).
+
+    Searches the same grid as _find_positive_equiv_from_angles but collects
+    *all* matches, both positive and negative distance.  Results are
+    normalised to (−π, π] and deduplicated.
+    """
+    R_target = _pyfai_rotation_matrix(rot1, rot2, rot3)
+    seen = set()
+    results = []
+    for d1 in (0, pi, -pi):
+        for d2 in (0, pi, -pi, 2 * pi, -2 * pi):
+            for d3 in (0, pi, -pi):
+                for s2 in (1, -1):
+                    rt1, rt2, rt3 = rot1 + d1, s2 * rot2 + d2, rot3 + d3
+                    if abs(rt1) > 10 or abs(rt2) > 10 or abs(rt3) > 10:
+                        continue
+                    Rt = _pyfai_rotation_matrix(rt1, rt2, rt3)
+                    maxdiff = max(abs(Rt[i][j] - R_target[i][j])
+                                  for i in range(3) for j in range(3))
+                    if maxdiff < 1e-8:
+                        n1 = atan2(sin(rt1), cos(rt1))
+                        n2 = atan2(sin(rt2), cos(rt2))
+                        n3 = atan2(sin(rt3), cos(rt3))
+                        key = (round(n1, 8), round(n2, 8), round(n3, 8))
+                        if key not in seen:
+                            seen.add(key)
+                            results.append((n1, n2, n3))
+    return results
+
+
 def _get_mirror_matrix(orient):
     """Return the mirror matrix for coordinate-frame relaxation.
 
@@ -339,7 +407,7 @@ def _get_mirror_matrix(orient):
 # ---------------------------------------------------------------------------
 
 def _compute_compensated_rotation(o11, o22, orient, r1_std, r2_std, r3_std,
-                                  mirror_M=None):
+                                  mirror_M=None, find_positive_equiv=True):
     """Compute compensated pyFAI rotation for a given (flip, orientation) pair.
 
     Derivation: equating the full pyFAI pipeline against the ID11 pipeline.
@@ -359,8 +427,12 @@ def _compute_compensated_rotation(o11, o22, orient, r1_std, r2_std, r3_std,
     Solving:  R_comp[:,0] = S . M . R_tilt[:,0] . (o11 / c1)
               R_comp[:,1] = S . M . R_tilt[:,1] . (-o22 / c2)
 
-    Returns (rot1, rot2, rot3).  The mirror M ensures R[2,2] > 0
-    for all orientations, giving positive orthogonal distance.
+    Parameters
+    ----------
+    find_positive_equiv : bool, optional
+        If True (default) apply _find_positive_equiv_from_angles safety net.
+        If False, return the raw Euler angles directly (caller is
+        responsible for finding equivalent representations).
     """
     S_diag = {3: (1, 1, 1), 2: (-1, 1, 1), 4: (1, -1, 1), 1: (-1, -1, 1)}[orient]
     c1 = -1.0 if orient in (2, 1) else 1.0
@@ -386,13 +458,16 @@ def _compute_compensated_rotation(o11, o22, orient, r1_std, r2_std, r3_std,
     angles = rot_s.as_euler('ZYX')
     rot3_c, rot2_c, rot1_c = angles[0], -angles[1], -angles[2]
 
-    result = _find_positive_equiv_from_angles(rot1_c, rot2_c, rot3_c)
-    if result is None:
-        result = (rot1_c, rot2_c, rot3_c)
-    return result
+    if find_positive_equiv:
+        result = _find_positive_equiv_from_angles(rot1_c, rot2_c, rot3_c)
+        if result is None:
+            result = (rot1_c, rot2_c, rot3_c)
+        return result
+    return (rot1_c, rot2_c, rot3_c)
 
 
-def _compute_id11_from_pyfai(rot1, rot2, rot3, orient, mirror_M=None):
+def _compute_id11_from_pyfai(rot1, rot2, rot3, orient, mirror_M=None,
+                              o11=None, o22=None):
     """Recover ID11 tilt rotation from compensated pyFAI params.
 
     Reverse of _compute_compensated_rotation. From the forward equation:
@@ -400,12 +475,24 @@ def _compute_id11_from_pyfai(rot1, rot2, rot3, orient, mirror_M=None):
     reverse:
       R_tilt[:,0] = M^{-1} . S . R_comp[:,0] . (c1 / o11)
       R_tilt[:,1] = M^{-1} . S . R_comp[:,1] . (c2 / (-o22))
+
+    Parameters
+    ----------
+    o11, o22 : int, optional
+        Override the ImageD11 flip values (from the original par).
+        If None, defaults to ``orientation_to_flip(orient)``.
     """
     S_diag = {3: (1, 1, 1), 2: (-1, 1, 1), 4: (1, -1, 1), 1: (-1, -1, 1)}[orient]
     c1 = -1.0 if orient in (2, 1) else 1.0
     c2 = -1.0 if orient in (4, 1) else 1.0
 
-    o11, o12, o21, o22 = orientation_to_flip(orient)
+    if o11 is None or o22 is None:
+        _o11, _o12, _o21, _o22 = orientation_to_flip(orient)
+        if o11 is None:
+            o11 = _o11
+        if o22 is None:
+            o22 = _o22
+
     R_comp = np.array(_pyfai_rotation_matrix(rot1, rot2, rot3))
 
     rt_c0 = np.array([S_diag[0] * R_comp[0, 0] * (c1 / o11),
@@ -431,7 +518,233 @@ def _compute_id11_from_pyfai(rot1, rot2, rot3, orient, mirror_M=None):
     return _extract_rot(R_tilt)
 
 
-def par_to_poni(par, detector_shape=None):
+def _build_poni_from_compensated_rots(par, trial_orient, rot1, rot2, rot3,
+                                       detector_shape, use_mirror,
+                                       forward_mirror_orient=None,
+                                       forward_o11=None, forward_o22=None):
+    """Build a full poni dict from compensated rotations and a par dict.
+
+    This factors out the poni-building logic so that the solution finder
+    can generate multiple candidate poni dicts from different (rot1,rot2,rot3)
+    angle triples.
+
+    Parameters
+    ----------
+    trial_orient : int
+        The pyFAI orientation (1-4) used for PONI formulas and stored as
+        ``orientation`` in the poni dict.  May differ from the canonical
+        orientation for the par's flip.
+    forward_o11, forward_o22 : int, optional
+        The original ImageD11 flip values for this solution.  Used during
+        reverse conversion (poni_to_par) to recover the correct flip.
+    forward_mirror_orient : int, optional
+        Which orientation's mirror matrix was used (1-4), or None for
+        identity mirror.
+    """
+    distance = float(par["distance"])
+    yc = float(par["y_center"])
+    zc = float(par["z_center"])
+    ys = float(par["y_size"])
+    zs = float(par["z_size"])
+    wl_m = float(par.get("wavelength", 0.0))
+    delta = distance
+
+    if detector_shape is None:
+        shape_fast = max(int(2 * (yc if yc > 0 else -yc) + 1), 2)
+        shape_slow = max(int(2 * (zc if zc > 0 else -zc) + 1), 2)
+        if shape_fast < 2 or shape_fast > 100000:
+            shape_fast = 2
+        if shape_slow < 2 or shape_slow > 100000:
+            shape_slow = 2
+        detector_shape = (shape_slow, shape_fast)
+
+    shape_slow, shape_fast = int(detector_shape[0]), int(detector_shape[1])
+    max_d1 = shape_slow - 1.0
+    max_d2 = shape_fast - 1.0
+
+    dist = delta * cos(rot2) * cos(rot1)
+
+    if trial_orient in (2, 1):
+        poni1 = -delta * sin(rot2) + zs * (max_d1 - zc + 0.5)
+    else:
+        poni1 = -delta * sin(rot2) + zs * (zc + 0.5)
+
+    if trial_orient in (4, 1):
+        poni2 = delta * cos(rot2) * sin(rot1) + ys * (max_d2 - yc + 0.5)
+    else:
+        poni2 = delta * cos(rot2) * sin(rot1) + ys * (yc + 0.5)
+
+    result = {
+        "dist": dist,
+        "poni1": poni1,
+        "poni2": poni2,
+        "rot1": rot1,
+        "rot2": rot2,
+        "rot3": rot3,
+        "pixel1": zs,
+        "pixel2": ys,
+        "wavelength": wl_m,
+        "orientation": trial_orient,
+        "_mirror_used": use_mirror,
+    }
+    if forward_o11 is not None and forward_o22 is not None:
+        result["_forward_o11"] = int(forward_o11)
+        result["_forward_o22"] = int(forward_o22)
+    if forward_mirror_orient is not None:
+        result["_mirror_orient"] = int(forward_mirror_orient)
+    return result
+
+
+def _deduplicate_solutions(solutions):
+    """Remove duplicate solutions that have the same rot angles and distance."""
+    seen = set()
+    unique = []
+    for sol in solutions:
+        p = sol["poni"]
+        key = (round(p["rot1"], 8), round(p["rot2"], 8), round(p["rot3"], 8),
+               round(p["dist"], 12))
+        if key not in seen:
+            seen.add(key)
+            unique.append(sol)
+    return unique
+
+
+def find_all_poni_solutions(par, detector_shape=None,
+                            include_backscattering=False):
+    """Find all valid pyFAI poni solutions for a given ImageD11 par dict.
+
+    Enumerates the **16 cross-mappings** between the 4 ImageD11 flip
+    matrices and the 4 pyFAI orientations.  For each (flip, orient) pair
+    the rotation-compensation equation
+
+        S(orient) · R · C(orient) = M · R_tilt · Z(flip)
+
+    is solved with each of the 4 distinct mirror matrices
+    {I, M(1), M(2), M(4)} (M(3) = I so it is not repeated).  Each
+    solution matrix has two equivalent Euler-angle representations
+    (the ZYX β-solution pair), giving **four** distinct ``(rot1,rot2,rot3)``
+    tuples per (flip, orient) pair → up to 16×4 = 64 solutions.
+
+    When ``include_backscattering=True``, seed rotations with ±π offsets
+    on rot1 or rot2 are additionally explored to discover representations
+    suitable for backscattering geometry (negative ImageD11 distance).
+
+    Parameters
+    ----------
+    par : dict
+        ImageD11 par dict.
+    detector_shape : (slow_dim, fast_dim) tuple, optional
+        Detector shape.
+    include_backscattering : bool, optional
+        If True, also search using π-offset seed rotations (for
+        backscattering geometry).
+
+    Returns
+    -------
+    list of dict
+        Each element has keys:
+        ``poni`` — the poni dict,
+        ``use_mirror`` — whether a non-identity mirror was used,
+        ``dist_positive`` — whether orthogonal distance is positive,
+        ``chi_eta_exact`` — True if chi = 90°−eta (identity mirror),
+        ``rot_magnitude`` — |rot1| + |rot2| + |rot3| (for ranking),
+        ``flip_label`` — which ImageD11 flip (e.g. "F_o3"),
+        ``orient_tried`` — which pyFAI orientation was tried,
+        ``mirror_source`` — which mirror was used ("I", "M1", "M2", "M4").
+        List is sorted best-first (positive distance preferred, then
+        smallest rotation magnitude).
+    """
+    tx = float(par.get("tilt_x", 0.0))
+    ty = float(par.get("tilt_y", 0.0))
+    tz = float(par.get("tilt_z", 0.0))
+    o11 = int(par.get("o11", 1))
+    o12 = int(par.get("o12", 0))
+    o21 = int(par.get("o21", 0))
+    o22 = int(par.get("o22", -1))
+
+    r1 = -tz
+    r2 = ty
+    r3 = tx
+
+    seeds = [(r1, r2, r3)]
+    if include_backscattering:
+        seeds.extend([
+            (r1, r2 + pi, r3),
+            (r1, r2 - pi, r3),
+            (r1 + pi, r2, r3),
+            (r1 - pi, r2, r3),
+        ])
+
+    if detector_shape is None:
+        shape_fast = max(int(2 * float(par.get("y_center", 500)) + 1), 2)
+        shape_slow = max(int(2 * float(par.get("z_center", 500)) + 1), 2)
+        detector_shape = (shape_slow, shape_fast)
+
+    _ALL_ORIENTS = [1, 2, 3, 4]
+    _MIRROR_CHOICES = [
+        (3, "M3", True),                # M(3) = I = diag(1,1,1)
+        (1, "M1", True),                # M(1) = diag(-1,-1,1)
+        (2, "M2", True),                # M(2) = diag(-1,1,1)
+        (4, "M4", True),                # M(4) = diag(1,-1,1)
+    ]
+
+    flip_key = (o11, o12, o21, o22)
+    if flip_key == (1, 0, 0, -1):
+        flip_label = "F_o3"
+    elif flip_key == (-1, 0, 0, 1):
+        flip_label = "F_o1"
+    elif flip_key == (-1, 0, 0, -1):
+        flip_label = "F_o4"
+    elif flip_key == (1, 0, 0, 1):
+        flip_label = "F_o2"
+    else:
+        flip_label = f"F_({o11},{o12},{o21},{o22})"
+
+    canonical_orient = flip_to_orientation(o11, o12, o21, o22)
+
+    solutions = []
+    for trial_orient in _ALL_ORIENTS:
+        for mirror_orient, mirror_name, use_mirror in _MIRROR_CHOICES:
+            mirror_M = _get_mirror_matrix(mirror_orient)
+
+            for sr1, sr2, sr3 in seeds:
+                rot1_base, rot2_base, rot3_base = _compute_compensated_rotation(
+                    o11, o22, trial_orient, sr1, sr2, sr3,
+                    mirror_M=mirror_M, find_positive_equiv=False)
+
+                for erot1, erot2, erot3 in _find_all_rot_equivs(rot1_base, rot2_base, rot3_base):
+                    chi_eta_exact = (mirror_orient == trial_orient)
+
+                    poni = _build_poni_from_compensated_rots(
+                        par, trial_orient, erot1, erot2, erot3,
+                        detector_shape, use_mirror,
+                        forward_mirror_orient=mirror_orient,
+                        forward_o11=o11, forward_o22=o22)
+
+                    solutions.append({
+                        "poni": poni,
+                        "use_mirror": use_mirror,
+                        "dist_positive": poni["dist"] > 0,
+                        "chi_eta_exact": chi_eta_exact,
+                        "rot_magnitude": abs(erot1) + abs(erot2) + abs(erot3),
+                        "flip_label": flip_label,
+                        "orient_tried": trial_orient,
+                        "mirror_source": mirror_name,
+                        "is_canonical": trial_orient == canonical_orient,
+                    })
+
+    unique = _deduplicate_solutions(solutions)
+    unique.sort(key=lambda s: (
+        0 if s["dist_positive"] else 1,
+        s["rot_magnitude"],
+        0 if s["is_canonical"] else 1,
+    ))
+    return unique
+
+
+def par_to_poni(par, detector_shape=None,
+                prefer_positive_distance=True,
+                exact_chi=False):
     """Convert ImageD11 .par parameters -> pyFAI .poni parameters.
 
     Parameters
@@ -445,75 +758,52 @@ def par_to_poni(par, detector_shape=None):
         convention: shape[0] = slow (height/rows), shape[1] = fast
         (width/columns).  Required for non-native orientations
         (2 and 4).  Defaults to square inferred from beam center.
+    prefer_positive_distance : bool, optional
+        If True (default) prefer solutions with positive orthogonal
+        distance (the current behaviour).  If False, also consider
+        solutions with negative distance.
+    exact_chi : bool, optional
+        If True, prefer the no-mirror solution where chi = 90°−eta
+        for *all* orientations.  Within that family the solution with
+        positive distance is preferred when available.
 
     Returns
     -------
     dict
         Keys: dist, poni1, poni2, rot1, rot2, rot3,
-        pixel1, pixel2, wavelength, orientation.
+        pixel1, pixel2, wavelength, orientation, _mirror_used.
     """
-    tx = float(par.get("tilt_x", 0.0))
-    ty = float(par.get("tilt_y", 0.0))
-    tz = float(par.get("tilt_z", 0.0))
-    distance = float(par["distance"])
-    yc = float(par["y_center"])
-    zc = float(par["z_center"])
-    ys = float(par["y_size"])
-    zs = float(par["z_size"])
-    o11 = int(par.get("o11", 1))
-    o12 = int(par.get("o12", 0))
-    o21 = int(par.get("o21", 0))
-    o22 = int(par.get("o22", -1))
-    orientation = flip_to_orientation(o11, o12, o21, o22)
-    wl_m = float(par.get("wavelength", 0.0))
-    delta = distance
+    solutions = find_all_poni_solutions(par, detector_shape=detector_shape)
 
-    if detector_shape is None:
-        shape_fast = max(int(2 * yc + 1), 2)
-        shape_slow = max(int(2 * zc + 1), 2)
-        detector_shape = (shape_slow, shape_fast)
+    if not solutions:
+        raise RuntimeError("No valid poni solution found for the given par parameters.")
+
+    if exact_chi:
+        candidates = [s for s in solutions if s["chi_eta_exact"]]
+        if not candidates:
+            candidates = solutions
     else:
-        shape_slow, shape_fast = int(detector_shape[0]), int(detector_shape[1])
+        candidates = solutions
 
-    # pyFAI _reorder_indexes_from_orientation uses shape[0]-1 for d1 (slow axis)
-    # and shape[1]-1 for d2 (fast axis).  detector_shape is (slow_dim, fast_dim)
-    # matching pyFAI's C-order shape convention.
-    max_d1 = shape_slow - 1.0
-    max_d2 = shape_fast - 1.0
+    if prefer_positive_distance:
+        pos = [s for s in candidates if s["dist_positive"]]
+        if pos:
+            candidates = pos
+        else:
+            bs_solutions = find_all_poni_solutions(
+                par, detector_shape=detector_shape, include_backscattering=True)
+            if exact_chi:
+                bs_candidates = [s for s in bs_solutions if s["chi_eta_exact"]]
+                if bs_candidates:
+                    bs_solutions = bs_candidates
+            pos = [s for s in bs_solutions if s["dist_positive"]]
+            if pos:
+                candidates = pos
+            else:
+                candidates = bs_solutions if bs_solutions else candidates
 
-    # Standard tilt mapping
-    r1 = -tz
-    r2 = ty
-    r3 = tx
-
-    mirror_M = _get_mirror_matrix(orientation)
-    rot1, rot2, rot3 = _compute_compensated_rotation(
-        o11, o22, orientation, r1, r2, r3, mirror_M=mirror_M)
-
-    dist = delta * cos(rot2) * cos(rot1)
-
-    if orientation in (2, 1):
-        poni1 = -delta * sin(rot2) + zs * (max_d1 - zc + 0.5)
-    else:
-        poni1 = -delta * sin(rot2) + zs * (zc + 0.5)
-
-    if orientation in (4, 1):
-        poni2 = delta * cos(rot2) * sin(rot1) + ys * (max_d2 - yc + 0.5)
-    else:
-        poni2 = delta * cos(rot2) * sin(rot1) + ys * (yc + 0.5)
-
-    return {
-        "dist": dist,
-        "poni1": poni1,
-        "poni2": poni2,
-        "rot1": rot1,
-        "rot2": rot2,
-        "rot3": rot3,
-        "pixel1": zs,
-        "pixel2": ys,
-        "wavelength": wl_m,
-        "orientation": orientation,
-    }
+    best = min(candidates, key=lambda s: s["rot_magnitude"])
+    return best["poni"]
 
 
 def poni_to_par(poni, detector_shape=None):
@@ -524,6 +814,8 @@ def poni_to_par(poni, detector_shape=None):
     poni : dict
         Keys: dist, poni1, poni2, rot1, rot2, rot3,
         pixel1, pixel2, wavelength, orientation.
+        May optionally contain ``_mirror_used`` (bool) indicating which
+        solution family was used in the forward conversion.
         All lengths and wavelength in meters.
     detector_shape : (slow_dim, fast_dim) tuple, optional
         Detector pixel dimensions matching pyFAI's C-order shape
@@ -546,12 +838,28 @@ def poni_to_par(poni, detector_shape=None):
     pv = float(poni["pixel1"])
     ph = float(poni["pixel2"])
     orientation = int(poni.get("orientation", 3))
-    o11, o12, o21, o22 = orientation_to_flip(orientation)
     wl_m = float(poni.get("wavelength", 0.0))
 
-    mirror_M = _get_mirror_matrix(orientation)
+    forward_o11 = poni.get("_forward_o11")
+    forward_o22 = poni.get("_forward_o22")
+    if forward_o11 is not None and forward_o22 is not None:
+        o11, o22 = int(forward_o11), int(forward_o22)
+        o12 = 0
+        o21 = 0
+    else:
+        o11, o12, o21, o22 = orientation_to_flip(orientation)
+
+    mirror_orient = poni.get("_mirror_orient")
+    if mirror_orient is not None:
+        mirror_M = _get_mirror_matrix(mirror_orient)
+    elif poni.get("_mirror_used", True):
+        mirror_M = _get_mirror_matrix(orientation)
+    else:
+        mirror_M = np.eye(3)
+
     tr1, tr2, tr3 = _compute_id11_from_pyfai(
-        rot1, rot2, rot3, orientation, mirror_M=mirror_M)
+        rot1, rot2, rot3, orientation, mirror_M=mirror_M,
+        o11=o11, o22=o22)
 
     tx = tr3
     ty = tr2
@@ -686,7 +994,11 @@ def _detector_config_from_poni(poni):
     pv = float(poni["pixel1"])
     ph = float(poni["pixel2"])
     orientation = int(poni.get("orientation", 3))
-    return {"pixel1": pv, "pixel2": ph, "max_shape": None, "orientation": orientation}
+    config = {"pixel1": pv, "pixel2": ph, "max_shape": None, "orientation": orientation}
+    for meta_key in ("_mirror_used", "_forward_o11", "_forward_o22", "_mirror_orient"):
+        if meta_key in poni:
+            config[meta_key] = poni[meta_key]
+    return config
 
 
 def read_poni(filepath):
@@ -707,6 +1019,7 @@ def read_poni(filepath):
     version = float(data.get("poni_version", 1))
     orientation = 3
     pixel1 = pixel2 = None
+    dc = {}
     if "detector_config" in data and version >= 2:
         try:
             dc = json.loads(data["detector_config"])
@@ -731,6 +1044,9 @@ def read_poni(filepath):
         "wavelength": float(data.get("wavelength", 0)),
         "orientation": int(orientation),
     }
+    for meta_key in ("_mirror_used", "_forward_o11", "_forward_o22", "_mirror_orient"):
+        if meta_key in dc:
+            result[meta_key] = dc[meta_key]
     return result
 
 

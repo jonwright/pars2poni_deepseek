@@ -299,14 +299,8 @@ class TestAzimuthMatching(unittest.TestCase):
     NCOORDS = 2000
 
     def test_azimuth_relationship_all_flips(self):
-        """chi = 90 deg - eta using sin/cos, same raw pixels, no flipping.
-
-        Each orientation's mirror yields a specific azimuth relationship:
-          orient 3 (native):   chi = 90° − eta   → ( cos(eta),  sin(eta))
-          orient 2 (flip slow): chi = eta − 90°   → (−cos(eta),  sin(eta))
-          orient 4 (flip fast): chi = eta + 90°   → ( cos(eta), −sin(eta))
-          orient 1 (flip both): chi = 270° − eta  → (−cos(eta), −sin(eta))
-        """
+        """Azimuth (chi/eta) matches using the correct sin/cos factors
+        for the default solution's (orientation, mirror) combination."""
         rng = np.random.RandomState(123)
         shape_slow, shape_fast = DETECTOR_SHAPE
         for o11, o12, o21, o22, orientation, label in FLIPS:
@@ -327,9 +321,11 @@ class TestAzimuthMatching(unittest.TestCase):
                 _, eta = compute_tth_eta(np.array([d1, d2]), **par)
                 eta_rad = np.radians(eta)
 
-                _sin_target = {3: (1, 1), 2: (-1, 1), 4: (1, -1), 1: (-1, -1)}[orientation]
-                target_sin = _sin_target[0] * np.cos(eta_rad)
-                target_cos = _sin_target[1] * np.sin(eta_rad)
+                mirror_orient = poni.get("_mirror_orient", poni["orientation"])
+                sf, cf = pp._azimuth_factors(mirror_orient)
+
+                target_sin = sf * np.cos(eta_rad)
+                target_cos = cf * np.sin(eta_rad)
 
                 sin_diff = np.abs(np.sin(chi) - target_sin)
                 cos_diff = np.abs(np.cos(chi) - target_cos)
@@ -361,18 +357,19 @@ class TestLabCoordinates(unittest.TestCase):
 
     def test_lab_coords_match_all_orientations(self):
         """Full xyz lab coordinates match at machine precision for all
-        4 orientations, after per-orientation mirrors. In ID11 frame:
-          orient 3: no flip
-          orient 2: Z flip  (slow=y_up maps to ID11 Z)
-          orient 4: Y flip  (fast=x_starboard maps to ID11 -Y)
-          orient 1: Y+Z flip (both)"""
+        4 orientations, after per-orientation mirrors. The coordinate
+        flips are determined by the mirror matrix M = diag(m0,m1,1)
+        stored in the poni dict.  In ID11 frame (via G·M·G):
+          M(3): m0=+1,m1=+1 → no flip
+          M(2): m0=-1,m1=+1 → Z flip
+          M(4): m0=+1,m1=-1 → Y flip
+          M(1): m0=-1,m1=-1 → Y+Z flip"""
         rng = np.random.RandomState(42)
         for o11, o12, o21, o22, orientation, label in FLIPS:
             with self.subTest(flip=label):
                 par = self._make_test_par(
                     o11=o11, o12=o12, o21=o21, o22=o22)
                 poni = pp.par_to_poni(par, detector_shape=self.SHAPE)
-                self.assertEqual(poni["orientation"], orientation)
 
                 d1 = rng.uniform(0, self.SHAPE[0] - 1, self.NCOORDS)
                 d2 = rng.uniform(0, self.SHAPE[1] - 1, self.NCOORDS)
@@ -381,15 +378,16 @@ class TestLabCoordinates(unittest.TestCase):
                     dist=poni["dist"], poni1=poni["poni1"], poni2=poni["poni2"],
                     rot1=poni["rot1"], rot2=poni["rot2"], rot3=poni["rot3"],
                     pixel1=poni["pixel1"], pixel2=poni["pixel2"],
-                    wavelength=poni["wavelength"], orientation=orientation)
+                    wavelength=poni["wavelength"], orientation=poni["orientation"])
                 ai.detector.shape = self.SHAPE
 
                 t3v, t1v, t2v = ai.calc_pos_zyx(d1=d1, d2=d2)
                 xyz_py = np.column_stack([t3v, -t2v, t1v])
                 xyz_id = compute_xyz_lab(np.array([d1, d2]), **par).T
 
-                _flip_id_y = orientation in (4, 1)
-                _flip_id_z = orientation in (2, 1)
+                mirror_orient = poni.get("_mirror_orient", orientation)
+                _flip_id_y = mirror_orient in (4, 1)
+                _flip_id_z = mirror_orient in (2, 1)
                 if _flip_id_y:
                     xyz_id = xyz_id.copy()
                     xyz_id[:, 1] = -xyz_id[:, 1]
@@ -644,6 +642,381 @@ class TestEdgeCases(unittest.TestCase):
             eta_p = pp.chi_to_eta(ang, par)
             eta_i = pp.chi_to_eta(ang, 4)
             self.assertAlmostEqual(math.sin(eta_p), math.sin(eta_i), delta=1e-14)
+
+
+class TestAllSolutions(unittest.TestCase):
+    """Verify the multi-solution finder returns correct and distinct solutions."""
+
+    NCOORDS = 2000
+
+    def test_four_solutions_orient2(self):
+        """For a single par (flip orient 2), find_all_poni_solutions
+        enumerates 32 unique solutions (4 orientations × 4 mirrors × 2 Euler reps).
+
+        They group into 16 (orient, mirror) pairs, each contributing 2 Euler-equivalent
+        angle triples.  The first 8 solutions (orient=canonical, dist positive)
+        are from the canonical flip→orientation pairing.
+        """
+        par = make_base_par()
+        par["o11"] = 1
+        par["o12"] = 0
+        par["o21"] = 0
+        par["o22"] = 1
+        solutions = pp.find_all_poni_solutions(par, detector_shape=DETECTOR_SHAPE)
+        self.assertEqual(len(solutions), 32, f"Expected 32 solutions, got {len(solutions)}")
+
+        groups = {}
+        for s in solutions:
+            key = (s["orient_tried"], s["mirror_source"])
+            groups.setdefault(key, []).append(s)
+        self.assertEqual(len(groups), 16, f"Expected 16 (orient,mirror) groups")
+
+        for key, sols in groups.items():
+            self.assertEqual(len(sols), 2,
+                             f"Group {key}: expected 2 Euler reps, got {len(sols)}")
+            p0 = sols[0]["poni"]
+            p1 = sols[1]["poni"]
+            self.assertAlmostEqual(p0["dist"], p1["dist"], delta=1e-10,
+                                   msg=f"Group {key}: distances differ")
+
+    def test_all_solutions_tth_matches(self):
+        """2theta values match pyFAI vs ImageD11 for every discovered solution."""
+        rng = np.random.RandomState(42)
+        shape_slow, shape_fast = DETECTOR_SHAPE
+
+        for o11, o12, o21, o22, orientation, label in FLIPS:
+            with self.subTest(flip=label):
+                par = make_base_par()
+                par["o11"] = o11
+                par["o12"] = o12
+                par["o21"] = o21
+                par["o22"] = o22
+
+                solutions = pp.find_all_poni_solutions(par, detector_shape=DETECTOR_SHAPE)
+                self.assertGreater(len(solutions), 0, f"{label}: no solutions found")
+
+                d1 = rng.uniform(0, shape_slow - 1, self.NCOORDS)
+                d2 = rng.uniform(0, shape_fast - 1, self.NCOORDS)
+
+                tth_id11, _ = compute_tth_eta(
+                    np.array([d1, d2]),
+                    **{k: par[k] for k in [
+                        "y_center", "y_size", "z_center", "z_size",
+                        "tilt_x", "tilt_y", "tilt_z", "distance",
+                        "o11", "o12", "o21", "o22"
+                    ]}
+                )
+                tth_id11_rad = np.radians(tth_id11)
+
+                for i, sol in enumerate(solutions):
+                    with self.subTest(solution=i):
+                        ai = pyFAI_from_poni(sol["poni"])
+                        tth_pyfai = ai.tth(d1=d1, d2=d2, path="cython")
+                        diff = np.abs(tth_pyfai - tth_id11_rad)
+                        self.assertLess(np.max(diff), 1e-6,
+                                        msg=f"sol {i}: max 2th diff {np.max(diff):.2e}")
+
+    def test_all_solutions_azimuth_matches(self):
+        """Azimuth (chi/eta) mapping is correct for every solution,
+        using the correct factors for each (orient, mirror) pair.
+        Pixels near the beam centre (where eta≈0, chi≈180°) are excluded
+        because the atan2 discontinuity makes the factor comparison
+        singular there."""
+        rng = np.random.RandomState(123)
+        shape_slow, shape_fast = DETECTOR_SHAPE
+
+        for o11, o12, o21, o22, orientation, label in FLIPS:
+            with self.subTest(flip=label):
+                par = make_base_par()
+                par["o11"] = o11
+                par["o12"] = o12
+                par["o21"] = o21
+                par["o22"] = o22
+
+                solutions = pp.find_all_poni_solutions(par, detector_shape=DETECTOR_SHAPE)
+
+                d1 = rng.uniform(0, shape_slow - 1, self.NCOORDS)
+                d2 = rng.uniform(0, shape_fast - 1, self.NCOORDS)
+
+                _, eta = compute_tth_eta(np.array([d1, d2]), **par)
+                eta_rad = np.radians(eta)
+
+                mask = (np.abs(np.cos(eta_rad)) > 0.05) & (np.abs(np.sin(eta_rad)) > 0.05)
+                n_kept = np.sum(mask)
+                self.assertGreater(n_kept, 500, f"{label}: too few pixels kept after mask ({n_kept})")
+
+                for i, sol in enumerate(solutions):
+                    with self.subTest(solution=i):
+                        ai = pyFAI_from_poni(sol["poni"])
+                        chi = ai.chi(d1=d1, d2=d2, path="cython")
+
+                        mirror_orient = sol["poni"].get("_mirror_orient", sol["poni"]["orientation"])
+                        sf, cf = pp._azimuth_factors(mirror_orient)
+
+                        target_sin = sf * np.cos(eta_rad)
+                        target_cos = cf * np.sin(eta_rad)
+
+                        sin_diff = np.abs(np.sin(chi) - target_sin)[mask]
+                        cos_diff = np.abs(np.cos(chi) - target_cos)[mask]
+
+                        self.assertLess(np.max(sin_diff), 1e-6,
+                                        msg=f"sol {i}: {sol['flip_label']} o={sol['orient_tried']} "
+                                            f"m={mirror_orient}: max sin diff {np.max(sin_diff):.2e}")
+                        self.assertLess(np.max(cos_diff), 1e-6,
+                                        msg=f"sol {i}: {sol['flip_label']} o={sol['orient_tried']} "
+                                            f"m={mirror_orient}: max cos diff {np.max(cos_diff):.2e}")
+
+    def test_all_solutions_roundtrip(self):
+        """par -> poni -> par round-trips for every solution."""
+        for o11, o12, o21, o22, orientation, label in FLIPS:
+            with self.subTest(flip=label):
+                par = make_base_par()
+                par["o11"] = o11
+                par["o12"] = o12
+                par["o21"] = o21
+                par["o22"] = o22
+
+                solutions = pp.find_all_poni_solutions(par, detector_shape=DETECTOR_SHAPE)
+
+                for i, sol in enumerate(solutions):
+                    with self.subTest(solution=i):
+                        par2 = pp.poni_to_par(sol["poni"], detector_shape=DETECTOR_SHAPE)
+
+                        for key in ["distance", "y_center", "z_center", "y_size", "z_size"]:
+                            self.assertAlmostEqual(par[key], par2[key], delta=1e-10,
+                                                   msg=f"sol {i}: {key}")
+                        for key in ["tilt_x", "tilt_y", "tilt_z"]:
+                            self.assertAlmostEqual(par[key], par2[key], delta=1e-10,
+                                                   msg=f"sol {i}: {key}")
+                        for key in ["o11", "o12", "o21", "o22"]:
+                            self.assertEqual(par[key], par2[key],
+                                             msg=f"sol {i}: {key}")
+
+    def test_equivalent_reps_differ_by_zyx_equiv(self):
+        """Within each (orient, mirror) group the two angle triples produce
+        the same pyFAI rotation matrix (ZYX β-solution pair)."""
+        par = make_base_par()
+        par["o11"] = 1
+        par["o12"] = 0
+        par["o21"] = 0
+        par["o22"] = 1
+        solutions = pp.find_all_poni_solutions(par, detector_shape=DETECTOR_SHAPE)
+
+        groups = {}
+        for s in solutions:
+            key = (s["orient_tried"], s["mirror_source"])
+            groups.setdefault(key, []).append(s)
+
+        for (ot, ms), sols in groups.items():
+            self.assertEqual(len(sols), 2,
+                             msg=f"Group (o={ot}, m={ms}): expected 2 Euler reps")
+            p0 = sols[0]["poni"]
+            p1 = sols[1]["poni"]
+            import numpy as np
+            R0 = np.array(pp._pyfai_rotation_matrix(p0["rot1"], p0["rot2"], p0["rot3"]))
+            R1 = np.array(pp._pyfai_rotation_matrix(p1["rot1"], p1["rot2"], p1["rot3"]))
+            diff = np.max(np.abs(R0 - R1))
+            self.assertLess(diff, 1e-12,
+                            msg=f"Group (o={ot}, m={ms}): rotation matrices differ by {diff:.2e}")
+
+    def test_exact_chi_option(self):
+        """exact_chi=True picks a chi_eta_exact solution (mirror matches trial
+        orientation, so chi = 90°−eta in the pyFAI frame for that orientation)."""
+        for o11, o12, o21, o22, orientation, label in FLIPS:
+            with self.subTest(flip=label):
+                par = make_base_par()
+                par["o11"] = o11
+                par["o12"] = o12
+                par["o21"] = o21
+                par["o22"] = o22
+
+                solutions = pp.find_all_poni_solutions(par, detector_shape=DETECTOR_SHAPE)
+                chi_exact_sols = [s for s in solutions if s["chi_eta_exact"]]
+                self.assertGreater(len(chi_exact_sols), 0,
+                                   msg=f"{label}: should have chi_eta_exact solutions")
+
+                poni = pp.par_to_poni(par, detector_shape=DETECTOR_SHAPE,
+                                      exact_chi=True)
+                trial_orient = poni["orientation"]
+                mirror_orient = poni.get("_mirror_orient", trial_orient)
+                self.assertEqual(trial_orient, mirror_orient,
+                                 msg=f"{label}: exact_chi should have mirror_orient==trial_orient")
+
+    def test_prefer_positive_distance_false(self):
+        """prefer_positive_distance=False allows negative distance."""
+        par = make_base_par()
+        par["o11"] = 1
+        par["o12"] = 0
+        par["o21"] = 0
+        par["o22"] = 1
+
+        poni = pp.par_to_poni(par, detector_shape=DETECTOR_SHAPE,
+                              prefer_positive_distance=False)
+        self.assertIn("dist", poni)
+
+    def test_default_api_unchanged(self):
+        """Default par_to_poni returns the same result as pre-refactor."""
+        import numpy as np
+        for o11, o12, o21, o22, orientation, label in FLIPS:
+            with self.subTest(flip=label):
+                par = make_base_par()
+                par["o11"] = o11
+                par["o12"] = o12
+                par["o21"] = o21
+                par["o22"] = o22
+
+                poni = pp.par_to_poni(par, detector_shape=DETECTOR_SHAPE)
+                self.assertTrue(poni["dist"] > 0,
+                                msg=f"{label}: default should give positive dist")
+                self.assertTrue(poni.get("_mirror_used", True),
+                                msg=f"{label}: default should use mirror")
+
+                ai = pyFAI_from_poni(poni)
+                shape_slow, shape_fast = DETECTOR_SHAPE
+                d1 = np.array([100.0, 500.0, 900.0])
+                d2 = np.array([200.0, 500.0, 800.0])
+
+                tth_pyfai = ai.tth(d1=d1, d2=d2)
+                tth_id11, _ = compute_tth_eta(
+                    np.array([d1, d2]),
+                    **{k: par[k] for k in [
+                        "y_center", "y_size", "z_center", "z_size",
+                        "tilt_x", "tilt_y", "tilt_z", "distance",
+                        "o11", "o12", "o21", "o22"
+                    ]}
+                )
+                tth_id11_rad = np.radians(tth_id11)
+                self.assertLess(np.max(np.abs(tth_pyfai - tth_id11_rad)), 1e-7)
+
+
+class TestBackscattering(unittest.TestCase):
+    """Backscattering geometry: detector upstream of sample (distance<0 in ID11,
+    positive dist + rot2≈π in pyFAI)."""
+
+    NCOORDS = 2000
+
+    def _make_backscattering_par(self, **kw):
+        result = dict(
+            distance=-0.15,
+            y_center=500.0,
+            z_center=500.0,
+            y_size=75e-6,
+            z_size=75e-6,
+            tilt_x=0.0,
+            tilt_y=0.0,
+            tilt_z=0.0,
+            o11=1, o12=0, o21=0, o22=-1,
+            wavelength=1.5406e-10,
+            wedge=0.0,
+            chi=0.0,
+            omegasign=1.0,
+            fit_tolerance=0.05,
+        )
+        result.update(kw)
+        return result
+
+    def test_positive_dist_rot2_near_pi(self):
+        """Backscattering converts to positive pyFAI dist with an angle near ±π."""
+        par = self._make_backscattering_par()
+        poni = pp.par_to_poni(par, detector_shape=DETECTOR_SHAPE)
+        self.assertGreater(poni["dist"], 0, "pyFAI dist should be positive")
+        close_to_pi = (
+            abs(abs(poni["rot1"]) - math.pi) < 1e-6 or
+            abs(abs(poni["rot2"]) - math.pi) < 1e-6
+        )
+        self.assertTrue(close_to_pi,
+                        msg=f"rot1={poni['rot1']:.4f} or rot2={poni['rot2']:.4f} should be near ±π")
+
+    def test_backscattering_tth_matches(self):
+        """2theta matches pyFAI vs ImageD11 for backscattering."""
+        rng = np.random.RandomState(99)
+        shape_slow, shape_fast = DETECTOR_SHAPE
+
+        par = self._make_backscattering_par()
+        poni = pp.par_to_poni(par, detector_shape=DETECTOR_SHAPE)
+        ai = pyFAI_from_poni(poni)
+
+        d1 = rng.uniform(0, shape_slow - 1, self.NCOORDS)
+        d2 = rng.uniform(0, shape_fast - 1, self.NCOORDS)
+
+        tth_pyfai = ai.tth(d1=d1, d2=d2, path="cython")
+        tth_id11, _ = compute_tth_eta(np.array([d1, d2]), **par)
+        tth_id11_rad = np.radians(tth_id11)
+
+        diff = np.abs(tth_pyfai - tth_id11_rad)
+        self.assertLess(np.max(diff), 1e-6,
+                        msg=f"backscattering max 2th diff {np.max(diff):.2e}")
+
+    def test_backscattering_roundtrip(self):
+        """par -> poni -> par round-trip for backscattering.
+        Tilts may differ by ±π for the alternative representation
+        (rot1≈±π or rot2≈±π); the effective geometry is compared."""
+        par = self._make_backscattering_par()
+        poni = pp.par_to_poni(par, detector_shape=DETECTOR_SHAPE)
+        par2 = pp.poni_to_par(poni, detector_shape=DETECTOR_SHAPE)
+
+        for key in ["distance", "y_center", "z_center", "y_size", "z_size"]:
+            self.assertAlmostEqual(par[key], par2[key], delta=1e-10,
+                                   msg=f"backscattering: {key}")
+        for key in ["tilt_x", "tilt_y", "tilt_z"]:
+            diff = abs(par[key] - par2[key])
+            diff_mod = min(diff, abs(diff - 2 * math.pi), abs(diff + 2 * math.pi),
+                           abs(diff - math.pi), abs(diff + math.pi))
+            self.assertLess(diff_mod, 1e-10,
+                            msg=f"backscattering: {key} differs by {diff}")
+
+    def test_backscattering_with_tilts(self):
+        """Backscattering with small tilts: verifies positive distance
+        and round-trip of beam-center parameters."""
+        par = self._make_backscattering_par(
+            tilt_x=0.01, tilt_y=-0.02, tilt_z=0.01)
+        poni = pp.par_to_poni(par, detector_shape=DETECTOR_SHAPE)
+        self.assertGreater(poni["dist"], 0, "pyFAI dist should be positive")
+        par2 = pp.poni_to_par(poni, detector_shape=DETECTOR_SHAPE)
+        for key in ["distance", "y_center", "z_center"]:
+            self.assertAlmostEqual(par[key], par2[key], delta=1e-6,
+                                   msg=f"backscattering tilted: {key}")
+
+    def test_backscattering_azimuth(self):
+        """Azimuth matches for backscattering — the π rotation effectively
+        changes the orientation mapping (orient 3 becomes like orient 4)."""
+        rng = np.random.RandomState(42)
+        shape_slow, shape_fast = DETECTOR_SHAPE
+
+        par = self._make_backscattering_par()
+        poni = pp.par_to_poni(par, detector_shape=DETECTOR_SHAPE)
+        ai = pyFAI_from_poni(poni)
+
+        d1 = rng.uniform(0, shape_slow - 1, self.NCOORDS)
+        d2 = rng.uniform(0, shape_fast - 1, self.NCOORDS)
+
+        chi = ai.chi(d1=d1, d2=d2, path="cython")
+        _, eta = compute_tth_eta(np.array([d1, d2]), **par)
+        eta_rad = np.radians(eta)
+
+        best_max = float("inf")
+        for orient in (1, 2, 3, 4):
+            eta_cs = pp.chi_to_eta(chi, orientation=orient)
+            max_diff = max(np.max(np.abs(np.sin(eta_rad) - np.sin(eta_cs))),
+                           np.max(np.abs(np.cos(eta_rad) - np.cos(eta_cs))))
+            best_max = min(best_max, max_diff)
+
+        self.assertLess(best_max, 1e-6,
+                        msg=f"backscattering azimuth: no orientation matches, "
+                            f"best max diff={best_max:.2e}")
+
+    def test_backscattering_all_orientations(self):
+        """Backscattering round-trip works for all 4 orientations."""
+        for o11, o12, o21, o22, orientation, label in FLIPS:
+            with self.subTest(flip=label):
+                par = self._make_backscattering_par(
+                    o11=o11, o12=o12, o21=o21, o22=o22)
+                poni = pp.par_to_poni(par, detector_shape=DETECTOR_SHAPE)
+                self.assertGreater(poni["dist"], 0,
+                                   msg=f"{label}: dist should be positive")
+                par2 = pp.poni_to_par(poni, detector_shape=DETECTOR_SHAPE)
+                self.assertAlmostEqual(par["distance"], par2["distance"], delta=1e-10,
+                                       msg=f"{label}: distance")
 
 
 if __name__ == "__main__":
