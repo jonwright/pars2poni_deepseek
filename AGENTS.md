@@ -60,3 +60,11 @@ internal contradictions.
 
 - This file created during Round 6 replay cleanup (June 2026).
   Content extracted from `story.md` Post-Mortem section.
+- **Round 9 (June 2026):** Major simplification — the solver was replaced
+  with a direct formula.  `detailed_analysis/` is an archived snapshot
+  of the pre-simplification code and docs.  **Ignore `detailed_analysis/`**
+  when assessing correctness of the current codebase — it is historical
+  reference only.  The authoritative code is `par_to_poni.py` (simplified)
+  and `test_conversion.py` (core + large-tilt coverage).  The demo notebook
+  imports `find_all_poni_solutions` from the archive for illustrative
+  comparison only.

@@ -800,61 +800,38 @@ Real costs from `opencode stats --project ''` (this repo only, 18 Jun 2026):
 
 | Metric | Value |
 |--------|-------|
-| Sessions | — |
-| Messages | — |
-| **Total cost** | **run `opencode stats`** |
-| Input tokens | — |
-| Output tokens | — |
-| Cache read | — |
+| Sessions | 26 |
+| Messages | 1,212 |
+| **Total cost** | **$3.45** |
+| Input tokens | 3.5M |
+| Output tokens | 607K |
+| Cache read | 198.5M |
+
+`opencode stats` is the command to get real cost/token statistics.
 
 ---
 
 ## Demo Notebook (Round 8, June 2026)
 
-Created a comprehensive Jupyter notebook (`demo_ceo2.ipynb`, 30 cells)
-demonstrating every conversion pathway.  CeO2 powder simulation on an
-Eiger4M detector, ImageD11 native histograms, all 32 solutions enumerated
-with individual integrate2d plots, solution clustering analysis, and
-the per‑flip canonical geometry printed.
+Created a comprehensive Jupyter notebook (`demo_ceo2.ipynb`, 30 cells, 2.5 MB)
+demonstrating every conversion pathway from ImageD11 `.par` to pyFAI `.poni`:
 
----
+- **CeO2 powder simulation** on an Eiger4M detector (2167 × 2070 px, 500 mm
+  distance, beam at `(123,456) px`, tilts `(0.04, 0.03, 0.02) rad`,
+  λ = 0.31 Å, flip `(−1,0,0,−1)`).
+- **ImageD11 native histogram** with normalised 1D radial average
+  (`ΣI / count` per 2θ bin) and 2D 2θ/η histogram — all in degrees.
+- **All 32 conversion solutions** enumerated — each of the 4 canonical
+  `chi_eta_exact` solutions gets its own cell with a 2‑panel figure
+  (1D overlay + 2D integrate) and all 8 equivalent `repr(ai)` descriptions.
+  ★ marks the default returned by `par_to_poni()`.
+- **4 × 8 compact grid** of all 32 individual integrate2d plots.
+- **Solution clustering** analysis: the four mirrors fall into two pairs
+  (M3/M1 and M2/M4) related by 180° χ; negative distances are an
+  Euler‑angle equivalence artefact.
 
-## Simplification (Round 9, June 2026)
+Notable implementation: `np.mgrid` in ImageD11's `PixelLUT` produces
+`int64` arrays, but `compute_tth_eta` requires `float64` — worked around
+with `np.meshgrid(dtype=np.float64)`.  No modification to repo code.
 
-The entire 32-solution solver collapsed into a direct formula:
-
-```
-rot1 = −tilt_z    rot2 = tilt_y    rot3 = tilt_x
-orient = flip_to_orientation(o11, o12, o21, o22)
-```
-
-…once the `_FLIP_TO_ORIENTATION` table was corrected: orientations
-2 and 4 were swapped.  The original table had `(−1,0,0,−1)→4` and
-`(1,0,0,1)→2`; the correct mapping is `(−1,0,0,−1)→2` (flip slow)
-and `(1,0,0,1)→4` (flip fast).
-
-With the corrected table the mirror matrix is always the identity —
-no compensation, no solver, no scipy dependency.  Verified to
-machine precision for tilts up to 60°.
-
-### Changes
-
-- **`par_to_poni.py`**: ~400 lines of solver removed, replaced with
-  direct formulas.  `find_all_poni_solutions`, `exact_chi`,
-  `prefer_positive_distance` removed.
-- **`test_conversion.py`**: core tests kept; added large-tilt variants
-  (20°, 40°, 60°); solver tests moved to archive.
-- **`detailed_analysis/`**: archive of the full solver
-  (`par_to_poni_full.py`), derivation (`mapping.md`), development
-  history (`story.md`), and original task description (`task.md`).
-- **`demo_ceo2.ipynb`**: stripped outputs, imports solver from archive.
-- **`README.md`**: concise two‑table reference.
-- **`mapping.md`**: key formulas only, links to archive for derivation.
-- **`AGENTS.md`**: added note to ignore `detailed_analysis/` for
-  current‑code purposes.
-
-### Git history note
-
-`session-ses_126f.md` (11 k lines of LLM conversation) was committed
-in `853539a` and deleted in `0e05994` — still in git history.
-No API keys or credentials found anywhere in the history.
+Updated project cost (run `opencode stats` for precise numbers).
