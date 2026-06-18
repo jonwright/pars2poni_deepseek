@@ -1,7 +1,17 @@
 """
 par_to_poni.py — Convert between ImageD11 .par and pyFAI .poni geometry parameters.
 
-Based on pyFAI source code analysis of orientation handling:
+Coordinate systems (from library source code):
+- pyFAI: axis1=y_up(slow), axis2=x_starboard(fast), axis3=z_downstream
+  (pyFAI/geometry/core.py:2668-2670).  Rotation: Rz(rot3)·Ry(−rot2)·Rx(−rot1)
+  (core.py:2690-2702).  R1,R2 are right-handed with negated angles; pyFAI's own
+  comments label them "left-handed" referring to the sign convention.
+- ImageD11: X=downstream, Y=port, Z=up(slow) (transform.py:133-141).
+  Rotation: Rx(tilt_x)·Ry(tilt_y)·Rz(tilt_z) (transform.py:57-81, all r.h.).
+
+Frame transform: t_ID11 = G·t_pyFAI, G = [[0,0,1],[0,-1,0],[1,0,0]].
+
+Orientations from pyFAI internals:
 - Pixel reordering: _reorder_indexes_from_orientation  (_common.py:657)
 - Sign flips: f_t1 / f_t2                            (_geometry.pyx:68-105)
 
@@ -16,7 +26,7 @@ Per (orient, mirror) group there are two ZYX Euler-angle representations
 flips (o12,o21≠0) are not supported.
 
 Azimuth mapping — the pyFAI chi and ImageD11 eta angles are related by
-orientation- and mirror-dependent formulas; see _azimuth_factors().
+mirror-dependent formulas; see _azimuth_factors().
 
 Dependencies: numpy, scipy (for Rotation). All internal units are meters for
 lengths and meters for wavelength.
@@ -267,13 +277,17 @@ def _extract_orientation_from_arg(arg):
 # ---------------------------------------------------------------------------
 
 def _pyfai_rotation_matrix(rot1, rot2, rot3):
-    """pyFAI rotation matrix: Rz(rot3).Ry_left(rot2).Rx_left(rot1).
+    """pyFAI rotation matrix (pyFAI/geometry/core.py:2690-2702).
 
-    In standard right-handed convention this equals:
-        Rz(rot3) . Ry(-rot2) . Rx(-rot1)
-    which is intrinsic ZYX with angles [rot3, -rot2, -rot1].
-    Matches pyFAI's actual rotation_matrix() output to machine precision
-    (verified by test_pyfai_rotation_matrix_matches_actual in test_conversion.py).
+    pyFAI builds: rot1=Rx(−rot1), rot2=Ry(−rot2), rot3=Rz(rot3)
+    then R = rot3·rot2·rot1 = Rz(rot3)·Ry(−rot2)·Rx(−rot1).
+
+    pyFAI's source comments label R1,R2 "left-handed" but all three are
+    standard right-handed rotation matrices — the angles for R1,R2 are
+    simply negated.  Net result is intrinsic ZYX with [rot3, −rot2, −rot1].
+
+    Matches pyFAI's actual rotation_matrix() to machine precision
+    (verified by test_pyfai_rotation_matrix_matches_actual).
 
     Returns a tuple-of-tuples for backward compatibility.
     """

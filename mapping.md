@@ -15,9 +15,21 @@
 
 ## 2. Coordinate Systems
 
-**pyFAI lab frame** (left-handed): axis 1 = y_up (slow), axis 2 = x_starboard (fast), axis 3 = z_downstream.
+**pyFAI lab frame** (pyFAI/geometry/core.py:2668-2670):
+- axis 1 = y_up (slow pixel dimension), vertical, perpendicular to beam
+- axis 2 = x_starboard (fast pixel dimension), horizontal, perpendicular to beam
+- axis 3 = z_downstream, along the beam
 
-**ImageD11 lab frame** (right-handed): axis X = downstream, axis Y = port, axis Z = up (slow).
+The ordered basis (axis1, axis2, axis3) = (y_up, x_starboard, z_downstream)
+has determinant −1 (left-handed in pyFAI's axis ordering).  In standard
+physics order (x_starboard, y_up, z_downstream) the system is right-handed.
+
+**ImageD11 lab frame** (ImageD11/transform.py:133-141):
+- axis X = downstream along beam
+- axis Y = port (away from ring centre), flipped[1]
+- axis Z = up (slow pixel dimension), flipped[0]
+
+Standard right-handed system: X×Y = Z.
 
 Transform between frames: `t_ID11 = G · t_pyFAI` where
 
@@ -26,26 +38,41 @@ G = [[0, 0, 1],
      [0,-1, 0],
      [1, 0, 0]]
 ```
-`G² = I`, so the transform is self-inverse.
+`G² = I`, so the transform is self-inverse.  Derivation from
+`geometry_conversion.rst:488-506` and ImageD11 `transform.py:85-147`.
 
 ## 3. Rotation Conventions
 
-**pyFAI rotation** (intrinsic ZYX, left-handed R1/R2, right-handed R3):
+**pyFAI rotation** (pyFAI/geometry/core.py:2690-2702):
 ```
-R_pyFAI(θ₁,θ₂,θ₃) = Rz(θ₃) · Ry(-θ₂) · Rx(-θ₁)
-```
-
-**ImageD11 rotation** (all right-handed):
-```
-R_ID11(θx,θy,θz) = Rx(θx) · Ry(θy) · Rz(θz)
+rot1 = Rx(−θ₁)     # code comment: "left-handed"; mathematically right-handed with negated angle
+rot2 = Ry(−θ₂)     # code comment: "left-handed"; mathematically right-handed with negated angle
+rot3 = Rz(θ₃)      # code comment: "right-handed"
+R_pyFAI = rot3 · rot2 · rot1 = Rz(θ₃) · Ry(−θ₂) · Rx(−θ₁)
 ```
 
-Applying the frame transform to pyFAI's rotation gives the **standard (uncompensated)** tilt-to-rot mapping:
+All three matrices are standard right-handed rotation matrices; the
+"left-handed" comment in pyFAI's source refers to the sign convention
+(positive rot1 produces clockwise rotation when viewed from +X).
+The net effect is intrinsic ZYX with angles ``[θ₃, −θ₂, −θ₁]``.
+
+**ImageD11 rotation** (ImageD11/transform.py:57-81, all right-handed):
+```
+r1 = Rz(θz)      # note: "this is r.h."
+r2 = Ry(θy)
+r3 = Rx(θx)
+R_ID11 = r3 · r2 · r1 = Rx(θx) · Ry(θy) · Rz(θz)
+```
+
+Applying the G-matrix frame transform to pyFAI's rotation
+(evaluated via `G·Rx(θ)·G = Rz(θ)`, `G·Ry(θ)·G = Ry(−θ)`,
+`G·Rz(θ)·G = Rx(θ)`) gives the **standard (uncompensated)**
+tilt-to-rot mapping:
 
 ```
 θx = θ₃      (tilt_x = rot3)
 θy = θ₂      (tilt_y = rot2)
-θz = -θ₁     (tilt_z = -rot1)
+θz = −θ₁     (tilt_z = −rot1)
 ```
 
 These relations hold for the tilts **before** rotation compensation.
@@ -61,7 +88,7 @@ After compensation (below) the angle values differ.
    - O=4: c1=+1, c2=-1  (d2/fast flipped)
    - O=1: c1=-1, c2=-1  (both flipped)
 
-2. **Rotation**: `R = Rz(rot3)·Ry(-rot2)·Rx(-rot1)`
+2. **Rotation**: `R = Rz(rot3)·Ry(-rot2)·Rx(-rot1)` (core.py:2690-2702)
 
 3. **Post-rotation sign flips**: `S(O) = diag(s1, s2, 1)` where
    - O=3: s1=+1, s2=+1  (none)
