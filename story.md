@@ -800,13 +800,11 @@ Real costs from `opencode stats --project ''` (this repo only, 18 Jun 2026):
 
 | Metric | Value |
 |--------|-------|
-| Sessions | 25 |
-| Messages | 1,145 |
-| **Total cost** | **$3.18** |
-| Input tokens | 3.1M |
-| Output tokens | 586K |
-| Cache read | 183.1M |
-
-(All-projects total: $15.77 across 99 sessions for all repos on this machine.)
+| Sessions | 26 |
+| Messages | 1,212 |
+| **Total cost** | **$3.45** |
+| Input tokens | 3.5M |
+| Output tokens | 607K |
+| Cache read | 198.5M |
 
 `opencode stats` is the command to get real cost/token statistics.
