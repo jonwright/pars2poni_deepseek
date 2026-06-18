@@ -808,3 +808,30 @@ Real costs from `opencode stats --project ''` (this repo only, 18 Jun 2026):
 | Cache read | 198.5M |
 
 `opencode stats` is the command to get real cost/token statistics.
+
+---
+
+## Demo Notebook (Round 8, June 2026)
+
+Created a comprehensive Jupyter notebook (`demo_ceo2.ipynb`, 30 cells, 2.5 MB)
+demonstrating every conversion pathway from ImageD11 `.par` to pyFAI `.poni`:
+
+- **CeO2 powder simulation** on an Eiger4M detector (2167 × 2070 px, 500 mm
+  distance, beam at `(123,456) px`, tilts `(0.04, 0.03, 0.02) rad`,
+  λ = 0.31 Å, flip `(−1,0,0,−1)`).
+- **ImageD11 native histogram** with normalised 1D radial average
+  (`ΣI / count` per 2θ bin) and 2D 2θ/η histogram — all in degrees.
+- **All 32 conversion solutions** enumerated — each of the 4 canonical
+  `chi_eta_exact` solutions gets its own cell with a 2‑panel figure
+  (1D overlay + 2D integrate) and all 8 equivalent `repr(ai)` descriptions.
+  ★ marks the default returned by `par_to_poni()`.
+- **4 × 8 compact grid** of all 32 individual integrate2d plots.
+- **Solution clustering** analysis: the four mirrors fall into two pairs
+  (M3/M1 and M2/M4) related by 180° χ; negative distances are an
+  Euler‑angle equivalence artefact.
+
+Notable implementation: `np.mgrid` in ImageD11's `PixelLUT` produces
+`int64` arrays, but `compute_tth_eta` requires `float64` — worked around
+with `np.meshgrid(dtype=np.float64)`.  No modification to repo code.
+
+Updated project cost (run `opencode stats` for precise numbers).
