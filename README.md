@@ -40,7 +40,7 @@ pp.write_par(par, "geometry.par")
 ### Options
 
 ```python
-# Prefer the solution where χ = 90° − η for all orientations:
+# Prefer canonical azimuth mapping (mirror matches orientation):
 poni = pp.par_to_poni(par, exact_chi=True)
 
 # Allow negative distance (mirror/no-mirror variants):
@@ -126,7 +126,7 @@ See `mapping.md` for the full mathematical derivation.
 
 ## Status
 
-All 4 non-transpose orientations match exactly for all 32 valid solutions per flip:
+For each of the 4 non-transpose flips, all 32 valid solutions per flip match exactly:
 - 2θ at machine precision (≤ 10⁻⁷ rad)
 - Azimuth with mirror-dependent simple mapping
 - Lab coordinates with per-mirror reflections (≤ 5e-7 m)
@@ -135,7 +135,7 @@ All 4 non-transpose orientations match exactly for all 32 valid solutions per fl
 
 Transpose flips (`o12, o21 ≠ 0`) are not supported.
 Spatial distortion is not handled.
-37 tests, 482 subtest variations, all pass.
+45 tests (8 doc-validation, 37 geometric), 482 subtest variations, all pass.
 
 ---
 

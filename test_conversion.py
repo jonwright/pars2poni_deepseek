@@ -1019,5 +1019,125 @@ class TestBackscattering(unittest.TestCase):
                                        msg=f"{label}: distance")
 
 
+class TestDocumentation(unittest.TestCase):
+    """Validate documentation (README.md, mapping.md) against code.
+
+    Per AGENTS.md: documentation tables must match code data structures.
+    Any contradiction is a bug.
+    """
+
+    def test_readme_azimuth_table_matches_azimuth_factors(self):
+        """README.md mirror azimuth table matches _azimuth_factors()."""
+        # README lines 97-102: mirror table
+        expected = {
+            "M3 (I)": (1, 1),
+            "M2":     (-1, 1),
+            "M4":     (1, -1),
+            "M1":     (-1, -1),
+        }
+        for mirror_name, (sf, cf) in expected.items():
+            m_orient = 3 if "I" in mirror_name else int(mirror_name[1])
+            code_sf, code_cf = pp._azimuth_factors(m_orient)
+            self.assertEqual((sf, cf), (code_sf, code_cf),
+                             msg=f"{mirror_name}: table={sf,cf} code={code_sf,code_cf}")
+
+    def test_readme_canonical_azimuth_table_matches_code(self):
+        """README.md canonical orient→mirror table matches _FLIP_TO_ORIENTATION
+        and _azimuth_factors."""
+        # README lines 107-112
+        canonical = {
+            3: ("M3 (= I)", (1, 1)),
+            2: ("M2",       (-1, 1)),
+            4: ("M4",       (1, -1)),
+            1: ("M1",       (-1, -1)),
+        }
+        for orient, (_mname, (sf, cf)) in canonical.items():
+            code_sf, code_cf = pp._CHI_ETA_SIN_COS_FACTORS[orient]
+            self.assertEqual((sf, cf), (code_sf, code_cf),
+                             msg=f"orient {orient}: table={sf,cf} _CHI_ETA_SIN_COS_FACTORS={code_sf,code_cf}")
+
+    def test_readme_canonical_mirror_matches_orientation_to_flip(self):
+        """The canonical mirror for each orientation (README lines 107-112)
+        produces the correct flip via orientation_to_flip."""
+        # orient→flip from code
+        for orient, flip in pp._ORIENTATION_TO_FLIP.items():
+            o11, o12, o21, o22 = flip
+            tested = pp.flip_to_orientation(o11, o12, o21, o22)
+            self.assertEqual(orient, tested,
+                             msg=f"orientation_to_flip({orient})={flip} "
+                                 f"but flip_to_orientation{flip}={tested}")
+
+    def test_find_all_poni_solutions_keys_match_docs(self):
+        """Solution dict keys match the README.md solution structure table."""
+        par = dict(distance=0.15, y_center=500, z_center=500,
+                   y_size=75e-6, z_size=75e-6,
+                   tilt_x=0.3, tilt_y=0.2, tilt_z=-0.15,
+                   o11=1, o12=0, o21=0, o22=-1, wavelength=1.5e-10)
+        sols = pp.find_all_poni_solutions(par, detector_shape=(1000, 1000))
+        s = sols[0]
+        # README lines 71-80 lists these keys:
+        doc_keys = {"flip_label", "orient_tried", "mirror_source",
+                    "use_mirror", "dist_positive", "chi_eta_exact",
+                    "rot_magnitude", "is_canonical", "poni"}
+        actual_keys = set(s.keys())
+        self.assertEqual(doc_keys, actual_keys,
+                         msg=f"README documents {sorted(doc_keys)}, "
+                             f"code has {sorted(actual_keys)}")
+
+    def test_poni_dict_keys_standard(self):
+        """poni dict from par_to_poni has expected keys."""
+        par = dict(distance=0.15, y_center=500, z_center=500,
+                   y_size=75e-6, z_size=75e-6,
+                   tilt_x=0.3, tilt_y=0.2, tilt_z=-0.15,
+                   o11=1, o12=0, o21=0, o22=-1, wavelength=1.5e-10)
+        poni = pp.par_to_poni(par, detector_shape=(1000, 1000))
+        expected_keys = {"dist", "poni1", "poni2", "rot1", "rot2", "rot3",
+                         "pixel1", "pixel2", "wavelength", "orientation",
+                         "_mirror_used", "_mirror_orient",
+                         "_forward_o11", "_forward_o22"}
+        for k in expected_keys:
+            self.assertIn(k, poni, msg=f"poni dict missing key: {k}")
+
+    def test_mapping_md_mirror_table_matches_get_mirror_matrix(self):
+        """mapping.md §5 mirror table matches _get_mirror_matrix()."""
+        mirrors = {
+            3: (1, 1, 1),
+            2: (-1, 1, 1),
+            4: (1, -1, 1),
+            1: (-1, -1, 1),
+        }
+        for orient, expected_diag in mirrors.items():
+            M = pp._get_mirror_matrix(orient)
+            actual = (int(M[0, 0]), int(M[1, 1]), int(M[2, 2]))
+            self.assertEqual(expected_diag, actual,
+                             msg=f"M{orient}: docs={expected_diag} code={actual}")
+
+    def test_mapping_md_azimuth_table_matches_code(self):
+        """mapping.md §8 azimuth table matches _azimuth_factors()."""
+        for mirror_orient in [1, 2, 3, 4]:
+            sf, cf = pp._azimuth_factors(mirror_orient)
+            chi_eta = pp._CHI_ETA_SIN_COS_FACTORS[mirror_orient]
+            self.assertEqual((sf, cf), chi_eta,
+                             msg=f"M{mirror_orient}: _azimuth_factors={sf,cf} "
+                                 f"_CHI_ETA_SIN_COS_FACTORS={chi_eta}")
+
+    def test_solution_counts_consistent(self):
+        """Solution enumaration yields expected breakdown."""
+        par = dict(distance=0.15, y_center=500, z_center=500,
+                   y_size=75e-6, z_size=75e-6,
+                   tilt_x=0.3, tilt_y=0.2, tilt_z=-0.15,
+                   o11=1, o12=0, o21=0, o22=-1, wavelength=1.5e-10)
+        sols = pp.find_all_poni_solutions(par, detector_shape=(1000, 1000))
+        self.assertEqual(len(sols), 32)
+        groups = set((s["orient_tried"], s["mirror_source"]) for s in sols)
+        self.assertEqual(len(groups), 16,
+                         msg=f"Expected 16 (orient,mirror) groups, got {len(groups)}")
+        for ot, ms in groups:
+            cnt = sum(1 for s in sols
+                      if s["orient_tried"] == ot and s["mirror_source"] == ms)
+            self.assertEqual(cnt, 2,
+                             msg=f"Group (o={ot},m={ms}): expected 2 Euler reps, got {cnt}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
