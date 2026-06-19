@@ -101,9 +101,8 @@ Flips with off‑diagonal entries `(o12≠0 or o21≠0)` represent 90° detector
 rotations.  These require `force_orient3=True` — pyFAI has no native
 orientation for axis swaps.
 
-All 4 transpose flips are supported with correct round‑trip.
-Two of the four `((0,1,−1,0)` and `(0,−1,1,0))` need a column‑sign
-adjustment that trades ~3 mrad of 2θ precision for positive distance.
+All 4 transpose flips are supported with correct round‑trip
+and machine‑precision 2θ (same as non‑transpose).
 
 ```python
 par["o11"], par["o12"], par["o21"], par["o22"] = 0, 1, 1, 0  # axis swap
@@ -118,8 +117,7 @@ poni = pp.par_to_poni(par, detector_shape=shape, force_orient3=True)
 | ImageD11 | 2.1.3 |
 
 10 test classes, 35 tests, 148 subtests.
-All 2θ ≤ 1e-7 rad for non-transpose, ≤ 3e-2 rad for det=−1 transpose.
-Round‑trip ≤ 5e-13 m for all flips.
+All 2θ ≤ 1e-7 rad for all 8 flips. Round‑trip ≤ 5e-13 m.
 
 ---
 

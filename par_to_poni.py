@@ -14,9 +14,10 @@ Conversion formula:
     orient = flip_to_orientation(o11, o12, o21, o22)
     distance, PONI from orientation-dependent formulas below.
 
-Each of the 4 non-transpose flip matrices maps to exactly one pyFAI
-orientation (1–4).  Transpose flips (o12, o21 ≠ 0) are not supported.
-Spatial distortion is not handled.
+Each of the 8 flip matrices (4 non‑transpose + 4 transpose) maps
+to a pyFAI orientation.  Non‑transpose flips use the orientation
+from ``flip_to_orientation``; transpose flips require
+``force_orient3=True``.
 
 Dependencies: numpy.  All internal units are metres for lengths,
 metres for wavelength.
@@ -269,46 +270,22 @@ def par_to_poni(par, detector_shape=None, force_orient3=False):
         orientation = 3
         native_flip = (o11 == 1 and o12 == 0 and o21 == 0 and o22 == -1)
         if not native_flip:
-            if transpose:
-                # transpose flips via the full 2×2→3×3 Z matrix.
-                # Row 0 = [o11, o12], Row 1 = [−o21, −o22], Row 2 = [0,0,1]
-                Z = np.array([[o11,  o12, 0],
-                              [-o21, -o22, 0],
-                              [ 0,    0,  1]], dtype=float)
-                R_tilt = _build_rot_matrix(r1, r2, r3)
-                R_comp = R_tilt @ Z
-                if np.linalg.det(R_comp) < 0:
-                    # Z has det = −1; post-multiply by diag(−1, 1, 1)
-                    # to get a proper rotation with correct 2θ.
-                    R_comp = R_comp @ np.diag([-1.0, 1.0, 1.0])
-                r1, r2, r3 = _extract_rot(R_comp)
-                r1, r2, r3 = _positive_equiv(r1, r2, r3)
+            # Build the 3×3 flip matrix Z and its correcting mirror.
+            # Z = [[o11, o12, 0], [−o21, −o22, 0], [0, 0, 1]]
+            # When det(Z) = −1, use mirror M2 = diag(−1, 1, 1) so that
+            # R_comp = M · R_tilt · Z has det = +1 (proper rotation).
+            Z = np.array([[o11,  o12, 0],
+                          [-o21, -o22, 0],
+                          [ 0,    0,  1]], dtype=float)
+            need_mirror = (np.linalg.det(Z) < 0)
+            if need_mirror:
+                M = np.diag([-1.0, 1.0, 1.0])   # M2
             else:
-                # Non-transpose: build the correct rotation for the
-                # matched orientation, then transform to orient 3
-                # via the S and C (pixel‑flip) matrices.
-                matched_o = flip_to_orientation(o11, o12, o21, o22)
-                S = {3: (1, 1, 1), 2: (-1, 1, 1),
-                     4: (1, -1, 1), 1: (-1, -1, 1)}[matched_o]
-                c1 = -1.0 if matched_o in (2, 1) else 1.0
-                c2 = -1.0 if matched_o in (4, 1) else 1.0
-                R_mod = _build_rot_matrix(r1, r2, r3)
-                R_comp = np.column_stack([
-                    [S[0] * R_mod[0, 0] * c1,
-                     S[1] * R_mod[1, 0] * c1,
-                     S[2] * R_mod[2, 0] * c1],
-                    [S[0] * R_mod[0, 1] * c2,
-                     S[1] * R_mod[1, 1] * c2,
-                     S[2] * R_mod[2, 1] * c2],
-                ])
-                r_c2 = np.cross(R_comp[:, 0], R_comp[:, 1])
-                if np.linalg.det(np.column_stack(
-                        [R_comp[:, 0], R_comp[:, 1], r_c2])) < 0:
-                    r_c2 = -r_c2
-                R_comp = np.column_stack([R_comp[:, 0],
-                                          R_comp[:, 1], r_c2])
-                r1, r2, r3 = _extract_rot(R_comp)
-                r1, r2, r3 = _positive_equiv(r1, r2, r3)
+                M = np.eye(3)                     # M3 = I
+            R_tilt = _build_rot_matrix(r1, r2, r3)
+            R_comp = M @ R_tilt @ Z
+            r1, r2, r3 = _extract_rot(R_comp)
+            r1, r2, r3 = _positive_equiv(r1, r2, r3)
 
     delta = float(par["distance"])
     yc = float(par["y_center"])
@@ -399,39 +376,15 @@ def poni_to_par(poni, detector_shape=None):
         native = (o11 == 1 and o12 == 0 and o21 == 0 and o22 == -1)
         if not native:
             R_comp = _build_rot_matrix(rot1, rot2, rot3)
-            transparent = (o12 != 0 or o21 != 0)
-            if transparent:
-                Z = np.array([[o11,  o12, 0],
-                              [-o21, -o22, 0],
-                              [ 0,    0,  1]], dtype=float)
-                # Undo forward col‑0 negation: R_raw = R_comp @ diag(−1,1,1)
-                # then R_tilt = R_raw @ Zᵀ
-                if np.linalg.det(Z) < 0:
-                    R_tilt = R_comp @ np.diag([-1.0, 1.0, 1.0]) @ Z.T
-                else:
-                    R_tilt = R_comp @ Z.T
-                rt1, rt2, rt3 = _extract_rot(R_tilt)
+            Z = np.array([[o11,  o12, 0],
+                          [-o21, -o22, 0],
+                          [ 0,    0,  1]], dtype=float)
+            if np.linalg.det(Z) < 0:
+                M = np.diag([-1.0, 1.0, 1.0])  # M2, self‑inverse
+                R_tilt = M @ R_comp @ Z.T
             else:
-                # Reverse S·C transform: R_mod = S · R_comp · C⁻¹
-                matched_o = flip_to_orientation(o11, o12, o21, o22)
-                S = {3: (1, 1, 1), 2: (-1, 1, 1),
-                     4: (1, -1, 1), 1: (-1, -1, 1)}[matched_o]
-                c1 = -1.0 if matched_o in (2, 1) else 1.0
-                c2 = -1.0 if matched_o in (4, 1) else 1.0
-                R_mod = np.column_stack([
-                    [S[0] * R_comp[0, 0] / c1,
-                     S[1] * R_comp[1, 0] / c1,
-                     S[2] * R_comp[2, 0] / c1],
-                    [S[0] * R_comp[0, 1] / c2,
-                     S[1] * R_comp[1, 1] / c2,
-                     S[2] * R_comp[2, 1] / c2],
-                ])
-                r_c2 = np.cross(R_mod[:, 0], R_mod[:, 1])
-                if np.linalg.det(np.column_stack(
-                        [R_mod[:, 0], R_mod[:, 1], r_c2])) < 0:
-                    r_c2 = -r_c2
-                R_mod = np.column_stack([R_mod[:, 0], R_mod[:, 1], r_c2])
-                rt1, rt2, rt3 = _extract_rot(R_mod)
+                R_tilt = R_comp @ Z.T
+            rt1, rt2, rt3 = _extract_rot(R_tilt)
         else:
             rt1, rt2, rt3 = rot1, rot2, rot3
         tx = rt3

@@ -620,11 +620,7 @@ class TestForceOrient3(unittest.TestCase):
                     **{k: par[k] for k in ["y_center","y_size","z_center","z_size",
                         "tilt_x","tilt_y","tilt_z","distance",
                         "o11","o12","o21","o22"]})
-                # Det = −1 flips (0,1,−1,0) and (0,−1,1,0) have ~3 mrad
-                # 2θ error from the column‑sign fix; all other flips
-                # are machine precision.
-                tol = 5e-2 if (o12 != 0 and o21 != 0 and o12 * o21 < 0) else 1e-7
-                self.assertLess(np.max(np.abs(tth_py - np.radians(tth_id))), tol)
+                self.assertLess(np.max(np.abs(tth_py - np.radians(tth_id))), 1e-7)
                 # Round‑trip always exact
                 par2 = pp.poni_to_par(poni, detector_shape=DETECTOR_SHAPE)
                 for key in ["tilt_x", "tilt_y", "tilt_z",

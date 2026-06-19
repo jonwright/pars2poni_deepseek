@@ -802,7 +802,7 @@ Real costs from `opencode stats --project ''` (this repo only, 19 Jun 2026):
 |--------|-------|
 | Sessions | 29 |
 | Messages | 1,576 |
-| **Total cost** | **$4.88** |
+| **Total cost** | **$5.03** |
 | Input tokens | 5.6M |
 | Output tokens | 779.2K |
 | Cache read | 272.3M |
@@ -898,10 +898,16 @@ Z = [[o11,  o12,  0],
 Derived empirically (grid‑searched sign conventions against
 `compute_tth_eta`).  Z is orthogonal → `Z⁻¹ = Zᵀ` for reversal.
 
-Two of four transpose flips have det(Z) = −1, requiring a
-column‑sign adjustment (`diag(−1,1,1)` post‑multiplication)
-to obtain proper Euler angles.  This trades ~3 mrad of 2θ precision
-for positive distance in those cases.
+When det(Z) = −1, pre‑multiplying by mirror M2 = diag(−1, 1, 1)
+gives `R_comp = M·R_tilt·Z` with det = +1 (proper rotation).
+The three previously‑failing pairs (the two det(Z) = −1
+non‑transpose flips and the two transpose ones) all resolve
+to machine‑precision 2θ.
+
+The unified formula `R_comp = M·R_tilt·Z` handles all 8 flips
+uniformly — the old S·C approach is equivalent to this with
+the correct mirror.  Machine‑precision 2θ for all 8; round‑trip
+exact.
 
 All 4 transpose flips round‑trip exactly.  `poni_to_par` stores
 all four `(o11,o12,o21,o22)` in the poni metadata for exact
