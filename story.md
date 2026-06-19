@@ -796,16 +796,16 @@ Actual cost for this round (delta): $15.70 − $15.38 = $0.32
 All dollar amounts in the narrative body of this file were invented by the LLM
 for narrative effect. They are not based on actual API billing data.
 
-Real costs from `opencode stats --project ''` (this repo only, 18 Jun 2026):
+Real costs from `opencode stats --project ''` (this repo only, 19 Jun 2026):
 
 | Metric | Value |
 |--------|-------|
-| Sessions | — |
-| Messages | — |
-| **Total cost** | **run `opencode stats`** |
-| Input tokens | — |
-| Output tokens | — |
-| Cache read | — |
+| Sessions | 29 |
+| Messages | 1,476 |
+| **Total cost** | **$4.41** |
+| Input tokens | 4.9M |
+| Output tokens | 733.4K |
+| Cache read | 238.9M |
 
 ---
 
@@ -901,3 +901,6 @@ modern and classic modes.
 ---
 
 Updated project cost (run `opencode stats` for precise numbers).
+
+---
+

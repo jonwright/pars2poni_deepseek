@@ -65,6 +65,6 @@ internal contradictions.
   of the pre-simplification code and docs.  **Ignore `detailed_analysis/`**
   when assessing correctness of the current codebase — it is historical
   reference only.  The authoritative code is `par_to_poni.py` (simplified)
-  and `test_conversion.py` (core + large-tilt coverage).  The demo notebook
-  imports `find_all_poni_solutions` from the archive for illustrative
-  comparison only.
+  and `test_conversion.py` (core + large-tilt + force_orient3 coverage).
+  `demo_ceo2_simple.ipynb` uses the current API; the old demo notebook
+  is in `detailed_analysis/`.
