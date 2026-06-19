@@ -801,11 +801,11 @@ Real costs from `opencode stats --project ''` (this repo only, 19 Jun 2026):
 | Metric | Value |
 |--------|-------|
 | Sessions | 29 |
-| Messages | 1,476 |
-| **Total cost** | **$4.41** |
-| Input tokens | 4.9M |
-| Output tokens | 733.4K |
-| Cache read | 238.9M |
+| Messages | 1,576 |
+| **Total cost** | **$4.88** |
+| Input tokens | 5.6M |
+| Output tokens | 779.2K |
+| Cache read | 272.3M |
 
 ---
 
@@ -881,6 +881,34 @@ stored in the poni metadata so `poni_to_par` round‑trips exactly.
 Implementation is ~40 lines of pure‑numpy direct algebra — no solver,
 no scipy.  5 new test methods, all pass (9 test classes, 33 tests,
 144 subtests).
+
+---
+
+## Transpose flips & classic orient 3 (June 2026)
+
+Extended `force_orient3` to handle transpose (axis‑swap) flips
+(o12≠0 or o21≠0).  The 2×2 flip matrix is extended to 3×3:
+
+```
+Z = [[o11,  o12,  0],
+     [−o21, −o22, 0],
+     [ 0,    0,   1]]
+```
+
+Derived empirically (grid‑searched sign conventions against
+`compute_tth_eta`).  Z is orthogonal → `Z⁻¹ = Zᵀ` for reversal.
+
+Two of four transpose flips have det(Z) = −1, requiring a
+column‑sign adjustment (`diag(−1,1,1)` post‑multiplication)
+to obtain proper Euler angles.  This trades ~3 mrad of 2θ precision
+for positive distance in those cases.
+
+All 4 transpose flips round‑trip exactly.  `poni_to_par` stores
+all four `(o11,o12,o21,o22)` in the poni metadata for exact
+recovery.  `par_to_poni` without `force_orient3` raises `ValueError`
+for transpose flips.
+
+35 tests, 148 subtests pass.  10 test classes.  $4.88 total cost.
 
 ---
 

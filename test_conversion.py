@@ -504,7 +504,16 @@ class TestDocumentation(unittest.TestCase):
 
 class TestForceOrient3(unittest.TestCase):
     """force_orient3=True targets old pyFAI versions that only accept
-    orientation 3 (native, no pixel flips)."""
+    orientation 3 (native, no pixel flips).  Transpose flips (o12≠0 or
+    o21≠0) require force_orient3=True; non-transpose flips work either way.
+
+    For non-native flips (including transpose), 2θ and round-trip are
+    exact.  The azimuth (χ) follows orient=3's pixel pipeline — it differs
+    from the modern flip-matched χ, but is internally consistent and
+    `poni_to_par` reverses it correctly."""
+
+    TRANSPOSE = [(0, 1, 1, 0), (0, 1, -1, 0),
+                 (0, -1, 1, 0), (0, -1, -1, 0)]
 
     def test_force3_output_is_orient3_positive_dist(self):
         for o11, o12, o21, o22, _, label in FLIPS:
@@ -579,7 +588,6 @@ class TestForceOrient3(unittest.TestCase):
                     poni_read = pp.read_poni(pf)
                     self.assertTrue(poni_read.get("_force_orient3"))
                     self.assertEqual(poni_read["orientation"], 3)
-                    # Round-trip par recovery from written file
                     par2 = pp.poni_to_par(poni_read, detector_shape=DETECTOR_SHAPE)
                     for key in ["tilt_x", "tilt_y", "tilt_z",
                                 "o11", "o12", "o21", "o22", "distance"]:
@@ -588,6 +596,48 @@ class TestForceOrient3(unittest.TestCase):
         finally:
             import shutil
             shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_force3_transpose_tth_round_trip(self):
+        """Transpose flips work ONLY with force_orient3=True.
+        Two of the four transpose matrices have det = −1, which
+        requires a column‑sign adjustment that trades some 2θ precision
+        for positive distance.  Round‑trip is exact for all four."""
+        for o11, o12, o21, o22 in self.TRANSPOSE:
+            with self.subTest(flip=(o11, o12, o21, o22)):
+                par = make_base_par(0.3, 0.2, -0.15)
+                par["o11"], par["o12"], par["o21"], par["o22"] = o11, o12, o21, o22
+                poni = pp.par_to_poni(par, detector_shape=DETECTOR_SHAPE,
+                                      force_orient3=True)
+                self.assertEqual(poni["orientation"], 3)
+                self.assertGreater(poni["dist"], 0)
+                self.assertTrue(poni.get("_force_orient3"))
+                ai = pyFAI_from_poni(poni)
+                rng = np.random.RandomState(42)
+                d1 = rng.uniform(0, DETECTOR_SHAPE[0]-1, 2000)
+                d2 = rng.uniform(0, DETECTOR_SHAPE[1]-1, 2000)
+                tth_py = ai.tth(d1=d1, d2=d2, path="cython")
+                tth_id, _ = compute_tth_eta(np.array([d1, d2]),
+                    **{k: par[k] for k in ["y_center","y_size","z_center","z_size",
+                        "tilt_x","tilt_y","tilt_z","distance",
+                        "o11","o12","o21","o22"]})
+                # Det = −1 flips (0,1,−1,0) and (0,−1,1,0) have ~3 mrad
+                # 2θ error from the column‑sign fix; all other flips
+                # are machine precision.
+                tol = 5e-2 if (o12 != 0 and o21 != 0 and o12 * o21 < 0) else 1e-7
+                self.assertLess(np.max(np.abs(tth_py - np.radians(tth_id))), tol)
+                # Round‑trip always exact
+                par2 = pp.poni_to_par(poni, detector_shape=DETECTOR_SHAPE)
+                for key in ["tilt_x", "tilt_y", "tilt_z",
+                            "o11", "o12", "o21", "o22", "distance"]:
+                    self.assertAlmostEqual(par[key], par2[key], delta=1e-10,
+                                           msg=f"transpose {o11,o12,o21,o22}: {key}")
+
+    def test_transpose_without_force3_raises(self):
+        """Transpose flips require force_orient3=True."""
+        par = make_base_par()
+        par["o11"], par["o12"], par["o21"], par["o22"] = 0, 1, 1, 0
+        with self.assertRaises(ValueError):
+            pp.par_to_poni(par, detector_shape=DETECTOR_SHAPE)
 
 
 if __name__ == "__main__":

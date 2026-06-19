@@ -248,7 +248,17 @@ def par_to_poni(par, detector_shape=None, force_orient3=False):
     o12 = int(par.get("o12", 0))
     o21 = int(par.get("o21", 0))
     o22 = int(par.get("o22", -1))
-    orientation = flip_to_orientation(o11, o12, o21, o22)
+
+    transpose = (o12 != 0 or o21 != 0)
+    if transpose and not force_orient3:
+        raise ValueError(
+            "Transpose flips (o12≠0 or o21≠0) require force_orient3=True. "
+            "pyFAI does not natively support axis-swap orientations.")
+
+    if transpose:
+        orientation = 3
+    else:
+        orientation = flip_to_orientation(o11, o12, o21, o22)
 
     # Standard rot from tilts
     r1 = -float(par.get("tilt_z", 0.0))
@@ -257,13 +267,48 @@ def par_to_poni(par, detector_shape=None, force_orient3=False):
 
     if force_orient3:
         orientation = 3
-        if (o11, o12, o21, o22) != (1, 0, 0, -1):
-            # Compensate:  R_comp = R_tilt · Z    where Z = diag(o11, −o22, 1)
-            R_tilt = _build_rot_matrix(r1, r2, r3)
-            Z = np.diag([float(o11), float(-o22), 1.0])
-            R_comp = R_tilt @ Z
-            r1, r2, r3 = _extract_rot(R_comp)
-            r1, r2, r3 = _positive_equiv(r1, r2, r3)
+        native_flip = (o11 == 1 and o12 == 0 and o21 == 0 and o22 == -1)
+        if not native_flip:
+            if transpose:
+                # transpose flips via the full 2×2→3×3 Z matrix.
+                # Row 0 = [o11, o12], Row 1 = [−o21, −o22], Row 2 = [0,0,1]
+                Z = np.array([[o11,  o12, 0],
+                              [-o21, -o22, 0],
+                              [ 0,    0,  1]], dtype=float)
+                R_tilt = _build_rot_matrix(r1, r2, r3)
+                R_comp = R_tilt @ Z
+                if np.linalg.det(R_comp) < 0:
+                    # Z has det = −1; post-multiply by diag(−1, 1, 1)
+                    # to get a proper rotation with correct 2θ.
+                    R_comp = R_comp @ np.diag([-1.0, 1.0, 1.0])
+                r1, r2, r3 = _extract_rot(R_comp)
+                r1, r2, r3 = _positive_equiv(r1, r2, r3)
+            else:
+                # Non-transpose: build the correct rotation for the
+                # matched orientation, then transform to orient 3
+                # via the S and C (pixel‑flip) matrices.
+                matched_o = flip_to_orientation(o11, o12, o21, o22)
+                S = {3: (1, 1, 1), 2: (-1, 1, 1),
+                     4: (1, -1, 1), 1: (-1, -1, 1)}[matched_o]
+                c1 = -1.0 if matched_o in (2, 1) else 1.0
+                c2 = -1.0 if matched_o in (4, 1) else 1.0
+                R_mod = _build_rot_matrix(r1, r2, r3)
+                R_comp = np.column_stack([
+                    [S[0] * R_mod[0, 0] * c1,
+                     S[1] * R_mod[1, 0] * c1,
+                     S[2] * R_mod[2, 0] * c1],
+                    [S[0] * R_mod[0, 1] * c2,
+                     S[1] * R_mod[1, 1] * c2,
+                     S[2] * R_mod[2, 1] * c2],
+                ])
+                r_c2 = np.cross(R_comp[:, 0], R_comp[:, 1])
+                if np.linalg.det(np.column_stack(
+                        [R_comp[:, 0], R_comp[:, 1], r_c2])) < 0:
+                    r_c2 = -r_c2
+                R_comp = np.column_stack([R_comp[:, 0],
+                                          R_comp[:, 1], r_c2])
+                r1, r2, r3 = _extract_rot(R_comp)
+                r1, r2, r3 = _positive_equiv(r1, r2, r3)
 
     delta = float(par["distance"])
     yc = float(par["y_center"])
@@ -306,6 +351,8 @@ def par_to_poni(par, detector_shape=None, force_orient3=False):
     if force_orient3:
         result["_force_orient3"] = True
         result["_forward_o11"] = o11
+        result["_forward_o12"] = o12
+        result["_forward_o21"] = o21
         result["_forward_o22"] = o22
     return result
 
@@ -346,15 +393,45 @@ def poni_to_par(poni, detector_shape=None):
     force3 = poni.get("_force_orient3", False)
     if force3:
         o11 = int(poni.get("_forward_o11", o11))
-        o12 = 0
-        o21 = 0
+        o12 = int(poni.get("_forward_o12", 0))
+        o21 = int(poni.get("_forward_o21", 0))
         o22 = int(poni.get("_forward_o22", o22))
-        if (o11, o12, o21, o22) != (1, 0, 0, -1):
-            # Reverse:  R_tilt = R_comp · Z   (Z is self-inverse)
+        native = (o11 == 1 and o12 == 0 and o21 == 0 and o22 == -1)
+        if not native:
             R_comp = _build_rot_matrix(rot1, rot2, rot3)
-            Z = np.diag([float(o11), float(-o22), 1.0])
-            R_tilt = R_comp @ Z
-            rt1, rt2, rt3 = _extract_rot(R_tilt)
+            transparent = (o12 != 0 or o21 != 0)
+            if transparent:
+                Z = np.array([[o11,  o12, 0],
+                              [-o21, -o22, 0],
+                              [ 0,    0,  1]], dtype=float)
+                # Undo forward col‑0 negation: R_raw = R_comp @ diag(−1,1,1)
+                # then R_tilt = R_raw @ Zᵀ
+                if np.linalg.det(Z) < 0:
+                    R_tilt = R_comp @ np.diag([-1.0, 1.0, 1.0]) @ Z.T
+                else:
+                    R_tilt = R_comp @ Z.T
+                rt1, rt2, rt3 = _extract_rot(R_tilt)
+            else:
+                # Reverse S·C transform: R_mod = S · R_comp · C⁻¹
+                matched_o = flip_to_orientation(o11, o12, o21, o22)
+                S = {3: (1, 1, 1), 2: (-1, 1, 1),
+                     4: (1, -1, 1), 1: (-1, -1, 1)}[matched_o]
+                c1 = -1.0 if matched_o in (2, 1) else 1.0
+                c2 = -1.0 if matched_o in (4, 1) else 1.0
+                R_mod = np.column_stack([
+                    [S[0] * R_comp[0, 0] / c1,
+                     S[1] * R_comp[1, 0] / c1,
+                     S[2] * R_comp[2, 0] / c1],
+                    [S[0] * R_comp[0, 1] / c2,
+                     S[1] * R_comp[1, 1] / c2,
+                     S[2] * R_comp[2, 1] / c2],
+                ])
+                r_c2 = np.cross(R_mod[:, 0], R_mod[:, 1])
+                if np.linalg.det(np.column_stack(
+                        [R_mod[:, 0], R_mod[:, 1], r_c2])) < 0:
+                    r_c2 = -r_c2
+                R_mod = np.column_stack([R_mod[:, 0], R_mod[:, 1], r_c2])
+                rt1, rt2, rt3 = _extract_rot(R_mod)
         else:
             rt1, rt2, rt3 = rot1, rot2, rot3
         tx = rt3
@@ -499,6 +576,8 @@ def _detector_config_from_poni(poni):
     if poni.get("_force_orient3"):
         config["_force_orient3"] = True
         config["_forward_o11"] = poni["_forward_o11"]
+        config["_forward_o12"] = poni.get("_forward_o12", 0)
+        config["_forward_o21"] = poni.get("_forward_o21", 0)
         config["_forward_o22"] = poni["_forward_o22"]
     return config
 
@@ -547,6 +626,8 @@ def read_poni(filepath):
         "orientation": int(orientation),
         "_force_orient3": dc.get("_force_orient3", False),
         "_forward_o11": dc.get("_forward_o11"),
+        "_forward_o12": dc.get("_forward_o12", 0),
+        "_forward_o21": dc.get("_forward_o21", 0),
         "_forward_o22": dc.get("_forward_o22"),
     }
 
