@@ -66,7 +66,34 @@ that account for the 0.5-pixel offset and pixel reordering.
 ```python
 eta = pp.chi_to_eta(chi_rad, orientation=3)
 chi = pp.eta_to_chi(eta_rad, orientation=3)
+
+# Orientation can come from a par or poni dict:
+eta = pp.chi_to_eta(chi_rad, par)
+chi = pp.eta_to_chi(chi_rad, poni)
 ```
+
+When using `chi_to_eta` / `eta_to_chi` with a par or poni dict, the
+orientation is extracted automatically — modern (flip‑matched) or
+classic (always orient 3) as appropriate.
+
+### Classic mode azimuth
+
+In classic mode (`force_orient3=True`) the output poni always uses
+orientation 3, so the azimuth mapping is **always** `χ = 90° − η`,
+regardless of the original ImageD11 flip.  The rotation compensation
+keeps 2θ correct.
+
+| ImageD11 flip | Modern χ = | Classic χ = |
+|---------------|------------|-------------|
+| `(1,0,0,−1)` → orient 3 | 90° − η | 90° − η |
+| `(−1,0,0,1)` → orient 1 | 270° − η | 90° − η |
+| `(−1,0,0,−1)` → orient 2 | η − 90° | 90° − η |
+| `(1,0,0,1)` → orient 4 | η + 90° | 90° − η |
+
+For the native flip `(1,0,0,−1)` the two modes are identical.
+For all other flips, modern and classic χ differ — both are
+correct for their respective orientation conventions, and `poni_to_par`
+reverses the mapping exactly.
 
 ## Details
 

@@ -881,3 +881,23 @@ stored in the poni metadata so `poni_to_par` round‑trips exactly.
 Implementation is ~40 lines of pure‑numpy direct algebra — no solver,
 no scipy.  5 new test methods, all pass (9 test classes, 33 tests,
 144 subtests).
+
+---
+
+## Simplified demo notebook (June 2026)
+
+Created `demo_ceo2_simple.ipynb` (12 cells) showing the two modes on a
+CeO2 / Eiger4M synthetic image: ImageD11 native, modern pyFAI
+(orient per flip), and classic pyFAI (`force_orient3`).  Each case gets
+its own 1D + 2D figure.  Round‑trip verification confirms classic
+orient=3 poni → ImageD11 par recovers the original flip exactly.
+
+The old 32‑solution demo notebook (`demo_ceo2.ipynb`) was moved to
+`detailed_analysis/` as historical reference.
+
+README updated to document the azimuth mapping difference between
+modern and classic modes.
+
+---
+
+Updated project cost (run `opencode stats` for precise numbers).
