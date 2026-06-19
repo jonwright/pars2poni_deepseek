@@ -243,7 +243,8 @@ def par_to_poni(par, detector_shape=None, force_orient3=False):
         Keys: dist, poni1, poni2, rot1, rot2, rot3,
         pixel1, pixel2, wavelength, orientation.
         If *force_orient3* was True, also contains ``_force_orient3``,
-        ``_forward_o11``, ``_forward_o22`` for exact round-trip.
+        ``_forward_o11``, ``_forward_o12``, ``_forward_o21``,
+        ``_forward_o22`` for exact round-trip.
     """
     o11 = int(par.get("o11", 1))
     o12 = int(par.get("o12", 0))

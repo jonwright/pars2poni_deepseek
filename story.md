@@ -955,7 +955,27 @@ Cross‑checked all tracked files against the code:
 
 ---
 
+## README & docs consistency round (June 2026)
+
+Merged the "Classic mode azimuth" and "Transpose flips" sections into a single
+`## Classic mode (force_orient3=True)` section in README.md.  Added a full
+8‑flip table to mapping.md with Z matrices, det(Z), and mirror (M2 vs I)
+assignments, plus explicit orientation 3 PONI formulas for the classic path.
+Fixed docstring in `par_to_poni.py` listing only `_forward_o11, _forward_o22`
+instead of all four `_forward_o11, _forward_o12, _forward_o21, _forward_o22`.
+
 Updated project cost (run `opencode stats` for precise numbers).
 
----
+### Real Costs (opencode stats --project '', 19 Jun 2026)
+
+| Metric | Value |
+|--------|-------|
+| Sessions | 30 |
+| Messages | 1,658 |
+| **Total cost** | **$5.12** |
+| Input tokens | 5.9M |
+| Output tokens | 806.0K |
+| Cache read | 292.4M |
+
+Delta from previous ($5.03): $0.09
 
