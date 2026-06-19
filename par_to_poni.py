@@ -43,7 +43,7 @@ Usage:
 import json
 import math
 import time
-from math import cos, sin, tan, atan2
+from math import cos, sin, tan, atan2, pi, sqrt
 
 import numpy as np
 
@@ -169,7 +169,56 @@ def _extract_orientation_from_arg(arg):
 # Core conversion
 # ---------------------------------------------------------------------------
 
-def par_to_poni(par, detector_shape=None):
+def _build_rot_matrix(r1, r2, r3):
+    """pyFAI rotation matrix  Rz(r3)·Ry(−r2)·Rx(−r1)."""
+    c1, s1 = cos(r1), sin(r1)
+    c2, s2 = cos(r2), sin(r2)
+    c3, s3 = cos(r3), sin(r3)
+    return np.array([
+        [c3 * c2,  c3 * s2 * s1 - s3 * c1,  -c3 * s2 * c1 - s3 * s1],
+        [s3 * c2,  s3 * s2 * s1 + c3 * c1,  -s3 * s2 * c1 + c3 * s1],
+        [s2,       -c2 * s1,                  c2 * c1],
+    ])
+
+
+def _extract_rot(R):
+    """Extract pyFAI Euler angles (rot1,rot2,rot3) from rotation matrix."""
+    r00, r01, r02 = R[0, 0], R[0, 1], R[0, 2]
+    r10, r11, r12 = R[1, 0], R[1, 1], R[1, 2]
+    r20, r21, r22 = R[2, 0], R[2, 1], R[2, 2]
+    if abs(r20) < 0.999999:
+        rot2 = atan2(r20, sqrt(r21 * r21 + r22 * r22))
+        rot1 = atan2(-r21, r22)
+        rot3 = atan2(r10, r00)
+    else:
+        rot3 = 0.0
+        if r20 > 0:
+            rot2 = pi / 2
+            rot1 = atan2(-r01, -r02)
+        else:
+            rot2 = -pi / 2
+            rot1 = atan2(r01, r02)
+    return rot1, rot2, rot3
+
+
+def _positive_equiv(r1, r2, r3):
+    """Find equivalent Euler angles with cos(r1)·cos(r2) > 0
+    (produces positive orthogonal distance)."""
+    R_target = _build_rot_matrix(r1, r2, r3)
+    best = None
+    for d1 in (0, pi, -pi):
+        for s2 in (1, -1):
+            for d3 in (0, pi, -pi):
+                rt1, rt2, rt3 = r1 + d1, s2 * r2, r3 + d3
+                Rt = _build_rot_matrix(rt1, rt2, rt3)
+                if max(abs(Rt[i, j] - R_target[i, j])
+                       for i in range(3) for j in range(3)) < 1e-10:
+                    if cos(rt1) * cos(rt2) > 0:
+                        if best is None or abs(rt1) + abs(rt2) < abs(best[0]) + abs(best[1]):
+                            best = (rt1, rt2, rt3)
+    return best if best is not None else (r1, r2, r3)
+
+def par_to_poni(par, detector_shape=None, force_orient3=False):
     """Convert ImageD11 .par parameters → pyFAI .poni parameters.
 
     Parameters
@@ -181,12 +230,19 @@ def par_to_poni(par, detector_shape=None):
     detector_shape : (slow_dim, fast_dim) tuple, optional
         pyFAI C-order shape (rows, cols).  Defaults to square
         inferred from beam centre.
+    force_orient3 : bool, optional
+        If True, always output orientation 3 (native, no pixel flips).
+        Required for old pyFAI versions that predate flip support.
+        When the ImageD11 flip is non-native, the rotation is
+        compensated so that 2θ and azimuth remain correct.
 
     Returns
     -------
     dict
         Keys: dist, poni1, poni2, rot1, rot2, rot3,
         pixel1, pixel2, wavelength, orientation.
+        If *force_orient3* was True, also contains ``_force_orient3``,
+        ``_forward_o11``, ``_forward_o22`` for exact round-trip.
     """
     o11 = int(par.get("o11", 1))
     o12 = int(par.get("o12", 0))
@@ -194,10 +250,20 @@ def par_to_poni(par, detector_shape=None):
     o22 = int(par.get("o22", -1))
     orientation = flip_to_orientation(o11, o12, o21, o22)
 
-    # Direct rot → tilt mapping:  rot1 = −tilt_z,  rot2 = tilt_y,  rot3 = tilt_x
-    rot1 = -float(par.get("tilt_z", 0.0))
-    rot2 = float(par.get("tilt_y", 0.0))
-    rot3 = float(par.get("tilt_x", 0.0))
+    # Standard rot from tilts
+    r1 = -float(par.get("tilt_z", 0.0))
+    r2 = float(par.get("tilt_y", 0.0))
+    r3 = float(par.get("tilt_x", 0.0))
+
+    if force_orient3:
+        orientation = 3
+        if (o11, o12, o21, o22) != (1, 0, 0, -1):
+            # Compensate:  R_comp = R_tilt · Z    where Z = diag(o11, −o22, 1)
+            R_tilt = _build_rot_matrix(r1, r2, r3)
+            Z = np.diag([float(o11), float(-o22), 1.0])
+            R_comp = R_tilt @ Z
+            r1, r2, r3 = _extract_rot(R_comp)
+            r1, r2, r3 = _positive_equiv(r1, r2, r3)
 
     delta = float(par["distance"])
     yc = float(par["y_center"])
@@ -217,26 +283,31 @@ def par_to_poni(par, detector_shape=None):
     max_d1 = shape_slow - 1.0
     max_d2 = shape_fast - 1.0
 
-    dist = delta * cos(rot1) * cos(rot2)
+    dist = delta * cos(r1) * cos(r2)
 
     beam_z = max_d1 - zc if orientation in (2, 1) else zc
     beam_y = max_d2 - yc if orientation in (4, 1) else yc
 
-    poni1 = -delta * sin(rot2) + zs * (beam_z + 0.5)
-    poni2 = delta * cos(rot2) * sin(rot1) + ys * (beam_y + 0.5)
+    poni1 = -delta * sin(r2) + zs * (beam_z + 0.5)
+    poni2 = delta * cos(r2) * sin(r1) + ys * (beam_y + 0.5)
 
-    return {
+    result = {
         "dist": dist,
         "poni1": poni1,
         "poni2": poni2,
-        "rot1": rot1,
-        "rot2": rot2,
-        "rot3": rot3,
+        "rot1": r1,
+        "rot2": r2,
+        "rot3": r3,
         "pixel1": zs,
         "pixel2": ys,
         "wavelength": wl_m,
         "orientation": orientation,
     }
+    if force_orient3:
+        result["_force_orient3"] = True
+        result["_forward_o11"] = o11
+        result["_forward_o22"] = o22
+    return result
 
 
 def poni_to_par(poni, detector_shape=None):
@@ -271,10 +342,28 @@ def poni_to_par(poni, detector_shape=None):
 
     o11, o12, o21, o22 = orientation_to_flip(orientation)
 
-    # Direct rot → tilt mapping:  tx = rot3,  ty = rot2,  tz = −rot1
-    tx = rot3
-    ty = rot2
-    tz = -rot1
+    # Determine tilt from rot, optionally reversing force_orient3 compensation
+    force3 = poni.get("_force_orient3", False)
+    if force3:
+        o11 = int(poni.get("_forward_o11", o11))
+        o12 = 0
+        o21 = 0
+        o22 = int(poni.get("_forward_o22", o22))
+        if (o11, o12, o21, o22) != (1, 0, 0, -1):
+            # Reverse:  R_tilt = R_comp · Z   (Z is self-inverse)
+            R_comp = _build_rot_matrix(rot1, rot2, rot3)
+            Z = np.diag([float(o11), float(-o22), 1.0])
+            R_tilt = R_comp @ Z
+            rt1, rt2, rt3 = _extract_rot(R_tilt)
+        else:
+            rt1, rt2, rt3 = rot1, rot2, rot3
+        tx = rt3
+        ty = rt2
+        tz = -rt1
+    else:
+        tx = rot3
+        ty = rot2
+        tz = -rot1
 
     delta = L / (cos(rot1) * cos(rot2))
 
@@ -407,6 +496,10 @@ def _detector_config_from_poni(poni):
     orientation = int(poni.get("orientation", 3))
     config = {"pixel1": pv, "pixel2": ph, "max_shape": None,
               "orientation": orientation}
+    if poni.get("_force_orient3"):
+        config["_force_orient3"] = True
+        config["_forward_o11"] = poni["_forward_o11"]
+        config["_forward_o22"] = poni["_forward_o22"]
     return config
 
 
@@ -452,6 +545,9 @@ def read_poni(filepath):
         "pixel2": pixel2,
         "wavelength": float(data.get("wavelength", 0)),
         "orientation": int(orientation),
+        "_force_orient3": dc.get("_force_orient3", False),
+        "_forward_o11": dc.get("_forward_o11"),
+        "_forward_o22": dc.get("_forward_o22"),
     }
 
 

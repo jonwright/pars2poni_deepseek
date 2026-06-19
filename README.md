@@ -9,16 +9,28 @@ import par_to_poni as pp
 
 shape = (2167, 2070)   # Eiger4M: (slow, fast) — pyFAI C-order convention
 
-# par → poni
+# par → poni (new pyFAI — orientation chosen per flip)
 par = pp.read_par("geometry.par")
 poni = pp.par_to_poni(par, detector_shape=shape)
 pp.write_poni(poni, "geometry.poni")
 
-# poni → par
+# par → poni (old pyFAI — force orientation 3, no pixel flips)
+poni3 = pp.par_to_poni(par, detector_shape=shape, force_orient3=True)
+pp.write_poni(poni3, "geometry_orient3.poni")
+
+# poni → par (works for both; recovers original flip automatically)
 poni = pp.read_poni("geometry.poni")
 par = pp.poni_to_par(poni, detector_shape=shape)
 pp.write_par(par, "geometry.par")
 ```
+
+`force_orient3` is for old pyFAI versions that predate flip support.
+It always outputs orientation 3 with positive distance. When the
+ImageD11 flip is non‑native, the rotation angles are compensated so
+that 2θ and azimuth remain correct.  The original flip parameters
+`(o11,o22)` are stored in the poni metadata so `poni_to_par` can
+exactly recover them — so old‑pyFAI files round‑trip cleanly back
+to ImageD11.  For native‑flip `(1,0,0,−1)` the two paths are identical.
 
 ## Conversion formula
 
@@ -70,7 +82,7 @@ for the complete mathematical derivation and solver history.
 
 (CI: pyFAI 2026.6.0a0, ImageD11 2.1.5)
 
-8 test classes, ~60 subtest variations including 60° tilts.
+9 test classes, ~70 subtest variations including 60° tilts.
 All 2θ ≤ 1e-7 rad, round-trip ≤ 5e-13 m, azimuth sin/cos ≤ 1e-7.
 
 ---

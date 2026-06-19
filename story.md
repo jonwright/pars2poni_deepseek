@@ -858,3 +858,26 @@ machine precision for tilts up to 60°.
 `session-ses_126f.md` (11 k lines of LLM conversation) was committed
 in `853539a` and deleted in `0e05994` — still in git history.
 No API keys or credentials found anywhere in the history.
+
+---
+
+## force_orient3 — old‑pyFAI compatibility (June 2026)
+
+Old versions of pyFAI only accept orientation 3 (native, no pixel flips).
+For non‑native ImageD11 flips, the rotation must be compensated:
+
+```
+R_comp = R_tilt · Z    where Z = diag(o11, −o22, 1)
+```
+
+`R_tilt` is the uncompensated tilt rotation, `Z` is the ImageD11
+flip matrix.  From `R_comp` we extract new pyFAI Euler angles and
+find the equivalent with positive orthogonal distance.
+
+The reverse path recovers `R_tilt = R_comp · Z` (Z is self‑inverse)
+and extracts the original ImageD11 tilts.  The original flip is
+stored in the poni metadata so `poni_to_par` round‑trips exactly.
+
+Implementation is ~40 lines of pure‑numpy direct algebra — no solver,
+no scipy.  5 new test methods, all pass (9 test classes, 33 tests,
+144 subtests).

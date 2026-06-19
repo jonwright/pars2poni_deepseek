@@ -502,5 +502,93 @@ class TestDocumentation(unittest.TestCase):
                              f"Orient {orient}: README cos={readme_cos_sign}, code={code_cos_sign}")
 
 
+class TestForceOrient3(unittest.TestCase):
+    """force_orient3=True targets old pyFAI versions that only accept
+    orientation 3 (native, no pixel flips)."""
+
+    def test_force3_output_is_orient3_positive_dist(self):
+        for o11, o12, o21, o22, _, label in FLIPS:
+            with self.subTest(flip=label):
+                par = make_base_par()
+                par["o11"], par["o12"], par["o21"], par["o22"] = o11, o12, o21, o22
+                poni = pp.par_to_poni(par, detector_shape=DETECTOR_SHAPE,
+                                      force_orient3=True)
+                self.assertEqual(poni["orientation"], 3)
+                self.assertGreater(poni["dist"], 0)
+                self.assertTrue(poni.get("_force_orient3"))
+
+    def test_force3_tth_matches_all_flips(self):
+        for o11, o12, o21, o22, _, label in FLIPS:
+            with self.subTest(flip=label):
+                par = make_base_par()
+                par["o11"], par["o12"], par["o21"], par["o22"] = o11, o12, o21, o22
+                poni = pp.par_to_poni(par, detector_shape=DETECTOR_SHAPE,
+                                      force_orient3=True)
+                ai = pyFAI_from_poni(poni)
+                rng = np.random.RandomState(42)
+                s0, s1 = DETECTOR_SHAPE
+                d1 = rng.uniform(0, s0 - 1, 2000)
+                d2 = rng.uniform(0, s1 - 1, 2000)
+                tth_py = ai.tth(d1=d1, d2=d2, path="cython")
+                tth_id, _ = compute_tth_eta(np.array([d1, d2]),
+                    **{k: par[k] for k in ["y_center","y_size","z_center","z_size",
+                        "tilt_x","tilt_y","tilt_z","distance",
+                        "o11","o12","o21","o22"]})
+                self.assertLess(np.max(np.abs(tth_py - np.radians(tth_id))), 1e-7)
+
+    def test_force3_round_trip(self):
+        for o11, o12, o21, o22, _, label in FLIPS:
+            with self.subTest(flip=label):
+                par = make_base_par()
+                par["o11"], par["o12"], par["o21"], par["o22"] = o11, o12, o21, o22
+                poni = pp.par_to_poni(par, detector_shape=DETECTOR_SHAPE,
+                                      force_orient3=True)
+                par2 = pp.poni_to_par(poni, detector_shape=DETECTOR_SHAPE)
+                for key in ["tilt_x", "tilt_y", "tilt_z",
+                            "o11", "o12", "o21", "o22", "distance"]:
+                    self.assertAlmostEqual(par[key], par2[key], delta=1e-10,
+                                           msg=f"{label}: {key} mismatch")
+
+    def test_force3_large_tilts(self):
+        for tx, ty, tz in LARGE_TILTS:
+            for o11, o12, o21, o22, _, label in FLIPS:
+                with self.subTest(flip=label, t=(tx, ty, tz)):
+                    par = make_base_par(tx, ty, tz)
+                    par["o11"], par["o12"], par["o21"], par["o22"] = o11, o12, o21, o22
+                    poni = pp.par_to_poni(par, detector_shape=DETECTOR_SHAPE,
+                                          force_orient3=True)
+                    self.assertEqual(poni["orientation"], 3)
+                    self.assertGreater(poni["dist"], 0)
+                    par2 = pp.poni_to_par(poni, detector_shape=DETECTOR_SHAPE)
+                    for key in ["tilt_x", "tilt_y", "tilt_z",
+                                "o11", "o12", "o21", "o22", "distance"]:
+                        self.assertAlmostEqual(par[key], par2[key], delta=1e-10)
+
+    def test_force3_file_round_trip(self):
+        import tempfile, os, pyFAI
+        tmpdir = tempfile.mkdtemp()
+        try:
+            for o11, o12, o21, o22, _, label in FLIPS:
+                with self.subTest(flip=label):
+                    par = make_base_par()
+                    par["o11"], par["o12"], par["o21"], par["o22"] = o11, o12, o21, o22
+                    poni = pp.par_to_poni(par, detector_shape=DETECTOR_SHAPE,
+                                          force_orient3=True)
+                    pf = os.path.join(tmpdir, f"{label}_f3.poni")
+                    pp.write_poni(poni, pf)
+                    poni_read = pp.read_poni(pf)
+                    self.assertTrue(poni_read.get("_force_orient3"))
+                    self.assertEqual(poni_read["orientation"], 3)
+                    # Round-trip par recovery from written file
+                    par2 = pp.poni_to_par(poni_read, detector_shape=DETECTOR_SHAPE)
+                    for key in ["tilt_x", "tilt_y", "tilt_z",
+                                "o11", "o12", "o21", "o22", "distance"]:
+                        self.assertAlmostEqual(par[key], par2[key], delta=1e-10,
+                                               msg=f"{label}: {key} mismatch via file")
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
