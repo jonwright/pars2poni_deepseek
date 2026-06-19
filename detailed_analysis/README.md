@@ -21,3 +21,4 @@ current (simplified) implementation and `../README.md` for usage.
 
 All test cases that exercise the full solver are in `../test_conversion.py`
 (classes that need `find_all_poni_solutions` import from `par_to_poni_full`).
+- `demo_ceo2.ipynb` — full 32-solution demo notebook (imports find_all_poni_solutions from `par_to_poni_full.py`)
