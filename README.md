@@ -28,7 +28,7 @@ pp.write_par(par, "geometry.par")
 It always outputs orientation 3 with positive distance. When the
 ImageD11 flip is non‑native, the rotation angles are compensated so
 that 2θ and azimuth remain correct.  The original flip parameters
-`(o11,o22)` are stored in the poni metadata so `poni_to_par` can
+`(o11,o12,o21,o22)` are stored in the poni metadata so `poni_to_par` can
 exactly recover them — so old‑pyFAI files round‑trip cleanly back
 to ImageD11.  For native‑flip `(1,0,0,−1)` the two paths are identical.
 

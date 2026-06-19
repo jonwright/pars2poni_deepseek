@@ -934,6 +934,27 @@ modern and classic modes.
 
 ---
 
+## Consistency review (June 2026)
+
+Cross‑checked all tracked files against the code:
+
+- **README.md**: flip→orient table, azimuth table, classic‑mode table,
+  transpose section, test counts all match `par_to_poni.py` and
+  `test_conversion.py`.  Fixed metadata storage mention from
+  `(o11,o22)` → all four `(o11,o12,o21,o22)`.
+
+- **mapping.md**: added `force_orient3` section with the unified
+  Z·M formula and transpose note.  Updated "Why this is the full
+  solution" to cover both modern and classic paths.
+
+- **demo_ceo2_simple.ipynb**: re‑executed with rendered outputs;
+  imports current `par_to_poni` (no archive dependency).  Zero errors.
+
+- **task.md** and **AGENTS.md**: no changes needed — task.md is the
+  original spec, AGENTS.md reference is up to date.
+
+---
+
 Updated project cost (run `opencode stats` for precise numbers).
 
 ---

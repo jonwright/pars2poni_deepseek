@@ -29,9 +29,10 @@ tilt_z = −rot1
 
 ## Orientation mapping
 
-Each ImageD11 flip `Z = diag(o11, −o22)` matches exactly one pyFAI
-orientation, which encodes the same pixel-axis flips via its C and S
-matrices:
+### Modern pyFAI
+
+Each non‑transpose ImageD11 flip `Z = diag(o11, −o22)` matches exactly
+one pyFAI orientation:
 
 | Flip | Z | pyFAI orient | Flips |
 |------|---|-------------|-------|
@@ -75,13 +76,47 @@ yc = max_d2 + 0.5 − (poni2 − L·tan(rot1)) / ph             for orient ∈ {
 | 4 | η+90° | +cos η | −sin η |
 | 1 | 270°−η | −cos η | −sin η |
 
+## force_orient3 — classic pyFAI (orientation 3 only)
+
+Old pyFAI versions accept only orientation 3.  For any flip, the
+rotation is compensated via the full 3×3 Z matrix:
+
+```
+Z = [[o11,  o12,  0],
+     [−o21, −o22, 0],
+     [ 0,    0,   1]]
+```
+
+When `det(Z) = −1`, pre‑multiplying by mirror M2 = `diag(−1, 1, 1)`
+gives a proper rotation:
+
+```
+R_comp = M · R_tilt · Z      where M = M2 if det(Z) < 0 else I
+```
+
+Euler angles are extracted from `R_comp` and the positive‑distance
+equivalent is found.  The reverse path uses `R_tilt = M·R_comp·Z⁻¹`
+with `Z⁻¹ = Zᵀ` (Z is orthogonal, M is self‑inverse).
+
+This unified formula handles all 8 flips (4 non‑transpose + 4 transpose).
+The original `(o11,o12,o21,o22)` are stored in the poni metadata for
+exact round‑trip.
+
+For modern pyFAI, the non‑transpose flips use the direct mapping
+`rot = (−tz, ty, tx)` with the orientation from the table above —
+no mirror compensation is needed.  Transpose flips require
+`force_orient3=True`.  `par_to_poni` without `force_orient3` raises
+`ValueError` for transpose.
+
 ## Why this is the full solution
 
-The affine pipeline equation `S·R·C = M·R_tilt·Z` has exactly one
-correct (flip, orientation) pairing.  When the flip and orientation match
-— with the corrected table above — the right-hand-side mirror M is
-the identity and the rotation R equals the uncompensated `R_tilt`.
-No solver, no mirror matrices, no rotation compensation is needed.
+The affine pipeline equation `S·R·C = M·R_tilt·Z` has at most
+one working (flip, orientation) pairing per flip.  For the modern
+path (non‑transpose flips with native orientation), M = I and
+the rotation R equals `R_tilt` directly — no solver needed.
+For the classic path (`force_orient3`), M is chosen from
+{M2, I} based on `det(Z)`, and the compensated rotation is
+`R_comp = M·R_tilt·Z`.
 
-For the complete derivation and historical 32-solution enumeration,
+For the complete derivation and historical 32‑solution enumeration,
 see `detailed_analysis/mapping.md`.
