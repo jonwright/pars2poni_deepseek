@@ -70,7 +70,7 @@ for the complete mathematical derivation and solver history.
 
 (CI: pyFAI 2026.6.0a0, ImageD11 2.1.5)
 
-7 test classes, ~60 subtest variations including 60° tilts.
+8 test classes, ~60 subtest variations including 60° tilts.
 All 2θ ≤ 1e-7 rad, round-trip ≤ 5e-13 m, azimuth sin/cos ≤ 1e-7.
 
 ---

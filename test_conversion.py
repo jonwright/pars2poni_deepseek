@@ -458,5 +458,49 @@ class TestEdgeCases(unittest.TestCase):
             self.assertAlmostEqual(math.sin(eta_p), math.sin(eta_i), delta=1e-14)
 
 
+class TestDocumentation(unittest.TestCase):
+    """Per AGENTS.md §3: documentation tables must match code data structures."""
+
+    def test_readme_flip_to_orientation_table_matches_code(self):
+        """Parse the flip→orientation table from README.md and check against
+        _FLIP_TO_ORIENTATION."""
+        with open(os.path.join(os.path.dirname(__file__), "README.md")) as f:
+            text = f.read()
+        table_expected = [
+            ("(1, 0, 0, -1)", "3"),
+            ("(-1, 0, 0, 1)", "1"),
+            ("(-1, 0, 0, -1)", "2"),
+            ("(1, 0, 0, 1)", "4"),
+        ]
+        for flip_str, orient_str in table_expected:
+            o11, o12, o21, o22 = [int(x.strip()) for x in flip_str.strip("()").split(",")]
+            code_o = pp._FLIP_TO_ORIENTATION.get((o11, o12, o21, o22))
+            self.assertIsNotNone(code_o, f"Flip {flip_str} not in _FLIP_TO_ORIENTATION")
+            self.assertEqual(str(code_o), orient_str,
+                             f"Flip {flip_str}: README={orient_str}, code={code_o}")
+            self.assertIn(flip_str, text, f"README.md missing {flip_str}")
+            self.assertIn(orient_str, text, f"README.md missing orient {orient_str}")
+
+    def test_readme_azimuth_table_matches_chieta_factors(self):
+        """Parse the azimuth table from README.md and check against
+        _CHI_ETA_SIN_COS_FACTORS."""
+        expected = {
+            3: ("+cos(η)", "+sin(η)"),
+            2: ("−cos(η)", "+sin(η)"),
+            4: ("+cos(η)", "−sin(η)"),
+            1: ("−cos(η)", "−sin(η)"),
+        }
+        for orient, (sin_str, cos_str) in expected.items():
+            code_sf, code_cf = pp._CHI_ETA_SIN_COS_FACTORS[orient]
+            readme_sin_sign = "+" if sin_str[0] != "−" else "-"
+            readme_cos_sign = "+" if cos_str[0] != "−" else "-"
+            code_sin_sign = "+" if code_sf == 1 else "-"
+            code_cos_sign = "+" if code_cf == 1 else "-"
+            self.assertEqual(readme_sin_sign, code_sin_sign,
+                             f"Orient {orient}: README sin={readme_sin_sign}, code={code_sin_sign}")
+            self.assertEqual(readme_cos_sign, code_cos_sign,
+                             f"Orient {orient}: README cos={readme_cos_sign}, code={code_cos_sign}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
